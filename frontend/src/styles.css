@@ -4938,5 +4938,5 @@ summary:focus-visible {
 }
 
 .composer-notice-action:hover:not(:disabled), .bubble-edit:hover { background:var(--sage-soft); }
-.bubble-edit { display:flex; align-items:center; justify-content:center; width:28px; height:28px; margin:8px 0 0 auto; padding:0; border:0; border-radius:4px; background:transparent; color:var(--ink-muted); cursor:pointer; }
-.bubble-edit:hover, .bubble-edit:focus-visible { color:var(--ink); }
+.bubble-edit { flex:none; align-self:flex-end; display:flex; align-items:center; justify-content:center; width:26px; height:26px; margin:0; padding:0; border:0; border-radius:4px; background:transparent; color:var(--ink-muted); opacity:.55; cursor:pointer; transition:opacity .15s ease; }
+.chat-row-user:hover .bubble-edit, .bubble-edit:hover, .bubble-edit:focus-visible { opacity:1; color:var(--ink); }

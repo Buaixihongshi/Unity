@@ -117,8 +117,10 @@ export function MissionRoomPage(props: {
       (props.detail.discussion?.protocol === 'deliberation_v2' && props.detail.discussion.phase !== 'ended')),
   );
   const discussion = props.detail?.discussion ?? null;
+  // Only discussions take input mid-run; an ordinary chat keeps the draft until it stops.
+  const chatRunning = hasActiveMission && !discussion;
   const submitLabel = hasActiveMission
-    ? (discussion ? "发送插话" : "发送补充")
+    ? (discussion ? "发送插话" : "运行中…")
     : "发送";
   const onboardingCard = props.onboarding && showOnboarding && !(discussion?.protocol === 'deliberation_v2' && props.turns.length > 0) ? (
     <OnboardingCard
@@ -144,11 +146,11 @@ export function MissionRoomPage(props: {
   const composer = <div className="discussion-panels composer-layout-compact">
     {discussionPanel && <div className="composer-discussion-status">{discussionPanel}</div>}
     <MissionComposer value={props.input} busy={props.busy} hasActiveMission={hasActiveMission}
-      disabled={props.conversationScope === "archived"} submitLabel={submitLabel} submitDisabled={props.stopping}
+      disabled={props.conversationScope === "archived"} submitLabel={submitLabel} submitDisabled={props.stopping || chatRunning}
       mentionsEnabled={!(hasActiveMission && discussion)} skillsEnabled={props.discussionEnabled ?? false}
       onChange={props.onInputChange}
       confirmations={props.confirmations} onConfirmationsChange={props.onConfirmationsChange} onSubmit={props.onSubmit}
-      onStop={hasActiveMission && !discussion ? props.onStop : undefined} stopping={props.stopping}
+      onStop={chatRunning ? props.onStop : undefined} stopping={props.stopping}
       revising={props.revising} onCancelRevise={props.onCancelRevise}
       />
   </div>;

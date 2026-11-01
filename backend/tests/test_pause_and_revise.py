@@ -67,6 +67,16 @@ def test_pause_stops_the_running_turn_and_frees_the_conversation(temp_settings):
     assert [m["content"] for m in detail["messages"] if m["role"] == "agent"] == ["宝宝的看法"]
 
 
+def test_a_stopped_run_refuses_late_interruptions(temp_settings):
+    adapter = _StopsOnSecondTurn()
+    with TestClient(create_app(temp_settings, mission_adapter=adapter)) as client:
+        mission_id = _start_paused_chat(client, adapter)["mission"]["id"]
+        late = client.post(f"/api/missions/{mission_id}/interruptions", json={"content": "迟到的补充"})
+        assert late.status_code == 409
+        detail = client.get(f"/api/missions/{mission_id}").json()
+    assert "迟到的补充" not in [m["content"] for m in detail["messages"]]
+
+
 def test_revised_message_supersedes_the_old_one_and_hands_over(temp_settings, repository):
     adapter = _StopsOnSecondTurn()
     with TestClient(create_app(temp_settings, mission_adapter=adapter)) as client:

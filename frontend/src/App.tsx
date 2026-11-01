@@ -64,6 +64,8 @@ export default function App() {
   /** The last user message explicitly selected for editing, if any. */
   const [revisingMessageId, setRevisingMessageId] = useState<string | null>(null);
   const draftBeforeRevision = useRef<{ input: string; confirmations: ConfirmedMention[] } | null>(null);
+  /** The mission on screen, so a slow stop can tell the user has moved elsewhere. */
+  const shownMissionId = useRef<string | undefined>(undefined);
   const [stopping, setStopping] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -203,6 +205,10 @@ export default function App() {
     latestMissionDetail && (!isTerminalMissionStatus(latestMissionDetail.mission.status) ||
       (latestMissionDetail.discussion?.protocol === "deliberation_v2" && latestMissionDetail.discussion.phase !== "ended")),
   );
+
+  useEffect(() => {
+    shownMissionId.current = latestMissionDetail?.mission.id;
+  }, [latestMissionDetail?.mission.id]);
 
   const handleSnapshot = useCallback((snapshot: MissionDetail) => {
     setLatestMissionDetail((prev) => {
@@ -452,6 +458,8 @@ export default function App() {
     }
 
     const activeMission = hasRunningMission ? latestMissionDetail : undefined;
+    // Ordinary chats take no input mid-run: the draft waits until the run ends or is stopped.
+    if (activeMission && !activeMission.discussion) return;
     const roundtableActive = activeMission?.mission.room_mode === "roundtable";
     if (activeMission && skillCommand) {
       setError("当前任务尚未结束。请先完成或停止当前任务，再调用 /discuss。");
@@ -527,10 +535,13 @@ export default function App() {
     try {
       let detail = await pauseMission(mission.mission.id);
       // The running turn stops within about a second; wait for the run to close.
-      for (let attempt = 0; attempt < 60 && !isTerminalMissionStatus(detail.mission.status); attempt += 1) {
+      const stillShown = () => shownMissionId.current === mission.mission.id;
+      for (let attempt = 0; attempt < 60 && stillShown() && !isTerminalMissionStatus(detail.mission.status); attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 250));
         detail = await fetchMission(mission.mission.id);
       }
+      // The user switched conversations meanwhile; the stop still applies, the screen is theirs.
+      if (!stillShown()) return;
       setLatestMissionDetail(detail);
       if (!isTerminalMissionStatus(detail.mission.status)) {
         setError("已请求停止，当前运行还在结束中，请稍候。");
