@@ -50,6 +50,7 @@ from backend.app.adapters.stream_events import StreamEventType, UsageRecord
 from backend.app.adapters.turn_deadline import (
     PROGRESS_CHECK_SECONDS, ToolResultDeadline, is_hub_work_result, is_tool_return,
 )
+from backend.app.adapters.failure_text import diagnostic_detail
 from backend.app.adapters.stream_parsers import StreamLineParser
 from backend.app.adapters.turn_record import TurnRecord
 from backend.app.adapters.subprocess_cli import (
@@ -427,12 +428,10 @@ class MCPSubprocessAdapter(CLIAdapter):
                             retryable=False,
                         )
                     if wait_reason is ProcessWaitReason.IDLE_TIMEOUT:
-                        noise = stderr.strip() or stdout.strip()
                         detail = "A2A idle deadline exceeded without meaningful activity"
-                        if noise:
-                            detail = f"{detail}\n{noise}"
-                        if len(detail) > 200:
-                            detail = detail[:200] + "…"
+                        tail = diagnostic_detail(stderr, stdout, limit=140)
+                        if tail:
+                            detail = f"{detail}\n{tail}"
                         summary = (
                             f"[{provider_id}] idle timeout after "
                             f"{self.idle_timeout}s {detail}"

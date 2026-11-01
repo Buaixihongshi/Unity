@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from backend.app.adapters.deliberation_errors import failure_code
+from backend.app.adapters.failure_text import is_informative
 from backend.app.domain.models import Message, MessageRole, Mission, MissionEvent
 from backend.app.observability import pricing
 
@@ -120,6 +122,7 @@ class Turn:
     duration_ms: int = 0
     reply: str = ""
     error: str = ""
+    failure_code: str = ""  # what the adapter itself reported, when it knew
     steps: list[Step] = field(default_factory=list)
     usage: Optional[dict] = None
     cost_usd: Optional[float] = None
@@ -148,6 +151,22 @@ class Turn:
         return any(s.kind == NATIVE for s in self.steps)
 
     @property
+    def failure_class(self) -> Optional[str]:
+        """Why a blocked/failed turn ended, as a fixed vocabulary; None otherwise.
+
+        Read time, like the checks: improving the classifier reclassifies
+        history. A reason that is only an exit code or startup noise is
+        "unknown" rather than a guess.
+        """
+        if self.status not in ("blocked", "failed"):
+            return None
+        if self.failure_code:
+            return self.failure_code
+        if not is_informative(self.error):
+            return "unknown"
+        return failure_code(self.error)
+
+    @property
     def cost_known(self) -> bool:
         return self.cost_usd is not None
 
@@ -169,6 +188,7 @@ class Turn:
             "duration_ms": self.duration_ms,
             "reply": self.reply,
             "error": self.error,
+            "failure_class": self.failure_class,
             "steps": [step.to_dict() for step in self.steps],
             "usage": self.usage,
             "tokens": pricing.total_tokens(self.usage),
@@ -381,6 +401,7 @@ def build_turns(
             if isinstance(duration, (int, float)) and not isinstance(duration, bool):
                 turn.duration_ms = int(duration)
             turn.error = str(payload.get("error") or "")
+            turn.failure_code = str(payload.get("failure_code") or "")
         elif kind == "provider.session":
             turn = turn_for(turn_id, payload)
             model = payload.get("model")

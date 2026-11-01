@@ -808,6 +808,7 @@ class MissionRunner:
                 attempt,
                 duration_ms,
                 outcome.summary or "blocked",
+                failure_code=outcome.failure_code,
             )
             attempt_events = self.repository.list_events_after(mission.id, 0)[event_offset:]
             reason = timeout_reason(outcome.failure_code, outcome.summary)

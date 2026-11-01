@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from typing import Callable, Optional
 
+from backend.app.adapters.failure_text import is_informative
 from backend.app.observability.turns import A2A, NATIVE, TOOL, Turn
 
 PASS, FAIL, NA = 1, 0, None
@@ -172,13 +173,22 @@ def check_tool_errors_handled(turn: Turn) -> dict:
 
 
 def check_blocked_explained(turn: Turn) -> dict:
-    """A blocked or failed turn must say why — in its error or in its reply."""
+    """A blocked or failed turn must say why — in its error or in its reply.
+
+    A non-empty error is not an explanation. "exit_code=1" followed by the
+    CLI's init event or a startup banner names no cause, and passing it made
+    this check unable to fail.
+    """
     if turn.status not in ("blocked", "failed"):
         return _result("blocked_explained", NA, "回合正常结束")
-    if turn.error.strip():
-        return _result("blocked_explained", PASS, f"记录了原因：{turn.error.strip()[:80]}")
+    if is_informative(turn.error):
+        return _result("blocked_explained", PASS,
+                       f"[{turn.failure_class}] {turn.error.strip()[:80]}")
     if turn.reply.strip():
         return _result("blocked_explained", PASS, "回复里说明了失败")
+    if turn.error.strip():
+        return _result("blocked_explained", FAIL,
+                       f"记录的只有退出码或启动输出：{turn.error.strip()[:60]}")
     return _result("blocked_explained", FAIL, "回合失败且没有任何说明")
 
 
@@ -191,7 +201,7 @@ CHECKS: dict[str, Callable[[Turn], dict]] = {
 WHAT: dict[str, str] = {
     "claims_match_events": "回复里的行动声明不与本回合事件矛盾",
     "tool_errors_handled": "失败的工具调用被重试或在回复中说明",
-    "blocked_explained": "失败/阻塞的回合给出了原因",
+    "blocked_explained": "失败/阻塞的回合给出了可读的原因",
 }
 
 
