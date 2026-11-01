@@ -9,18 +9,25 @@
 
 - 考场目录：`repo/` 是被评审 PR 合入后的代码（全新单提交历史、无远端），`pr.diff` 是该 PR 的改动，
   `TASK.md` 是考生须知，`out/` 可写。答案表不进考场。
-- 文件：禁止读取 `/Users`、`/Volumes`、`/private/tmp`、`/private/var/folders` 下考场以外的内容
-  （源仓库及其 Git 对象、答案表、CLI 记忆与会话记录、日常数据库都在其中）；考场外禁止写入。
+- 基线：沙箱默认全部拒绝，只导入系统自带的 `system.sb`（系统库和少量系统 Mach 服务）。
+  剪贴板、钥匙串、LaunchServices、WindowServer、TCC 等宿主服务都查不到（#94）。
+- 文件：只能读考场、`RUNTIME_READ` 里的工具链路径（`/usr/bin`、命令行工具等，不含 `/usr/local`、`/opt`）
+  和调用方显式传入的运行依赖；这些路径之外连 stat 都不行，只对它们的上级目录放开元数据（#95）。考场外禁止写入。
 - 网络：除一个本地代理端口外全部禁止出站。代理只放行白名单主机的 443 CONNECT，
-  GitHub 和本机 Unity 服务（8000/8100/8200/8300）都会被拒绝。
+  GitHub 和本机 Unity 服务（8000/8100/8200/8300）都会被拒绝。代理自己解析一次域名，
+  任一结果不是公网地址（回环、私网、链路本地、映射到这些地址的 IPv6 形式）就拒绝，
+  否则直接连检查过的那个 IP，不再二次解析（#96）。
 - 进程与环境：看不到其他进程；环境变量从零构造，`HOME`/`TMPDIR` 指向考场，不带令牌和 `YIREN_*`。
 - 进考场前用 `scan_canaries` 扫一遍考场，修复提交号、修复标题等出现即视为泄题。
 
 ## 查考场
 
-`backend/app/evaluation/exam_probe.py` 是假考生，逐项尝试偷看：翻 Git 历史、搜修复标记、读源仓库/答案表/
-记忆/会话记录/日常数据库、直连和经代理访问本机服务与 GitHub、调 `gh`、看进程、找令牌。
-同时有正向对照：必须能读 `repo/`、`pr.diff`，能在 `out/` 写文件，能 `git log`。
+`backend/app/evaluation/exam_probe.py` 是假考生，逐项尝试偷看：翻 Git 历史、搜修复标记、读和 stat 源仓库/答案表/
+记忆/会话记录/日常数据库、直连和经代理访问本机服务与 GitHub、调 `gh`、看进程、找令牌；
+查找剪贴板/钥匙串等宿主 Mach 服务，运行 `pbpaste`、`security list-keychains`、`defaults read -g`
+（只记退出码和字节数，不输出内容）。`probe` 命令还会在 `/private/var/tmp`、`/private/tmp` 和用户临时目录
+各放一个合成答案文件，结束后删除。
+同时有正向对照：必须能读 `repo/`、`pr.diff`，能在 `out/` 写文件，能 `git log`，能连上代理。
 同一考场再不加沙箱跑一遍作为对照，证明这些检查确实能发现泄漏。
 
 ```bash
@@ -52,3 +59,5 @@ python scripts/review_exam.py grade --sheet answer.txt --key key.json
   都还没接，也没有用真实模型验证过。
 - 题目与答案表、分组跑批、汇总统计。
 - 跨平台：Linux 上没有对应实现，测试会跳过沙箱用例。
+- 真实 CLI 需要的额外读取路径（如 Node 安装目录、证书）和 Mach 服务还没确定，接入时要逐项开放并重跑查考场。
+- 沙箱内调用 `/usr/bin/git`、`/usr/bin/python3` 会在 stderr 打印 xcrun 无法写缓存的提示，不影响结果。

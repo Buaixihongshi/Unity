@@ -4,12 +4,16 @@ A room is a throwaway directory holding a fresh single-commit snapshot of the
 reviewed code plus the PR diff. Examinee processes run under a sandbox profile
 that:
 
-- denies reading anything under /Users, /Volumes and the shared temp roots
-  except the room and explicitly listed runtime directories (CLI installs);
+- denies everything by default and imports only Apple's ``system.sb`` baseline
+  (system libraries, a short list of system Mach services); the pasteboard,
+  keychain, LaunchServices, WindowServer and TCC services stay unreachable;
+- reads only the room, a few toolchain paths (``RUNTIME_READ``) and explicitly
+  listed runtime directories (CLI installs); metadata only on their ancestors;
 - denies writes outside the room;
 - denies all outbound network except one loopback port, served by an
   allowlist CONNECT proxy (so a CLI can reach its model API, but nothing
-  else: not GitHub, not the local Unity hub);
+  else: not GitHub, not the local Unity hub). The proxy only connects to
+  public addresses it resolved and checked itself;
 - hides other processes;
 - starts from a scrubbed environment with HOME/TMPDIR inside the room.
 
@@ -19,19 +23,25 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import socket
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Awaitable, Callable, Iterable, Sequence
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-DENIED_READ_ROOTS = ("/Users", "/Volumes", "/private/tmp", "/private/var/folders")
+# Toolchain the probe and git need on top of system.sb (/System, /usr/lib, /usr/share).
+# /usr/local and /opt stay closed: they can hold databases and caches, not just binaries.
+RUNTIME_READ = ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec", "/Library/Developer/CommandLineTools",
+                "/private/var/select", "/private/var/db/xcode_select_link")
+NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 BASE_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin", "/usr/local/bin")
 
 
@@ -88,17 +98,19 @@ def scan_canaries(room: Path, canaries: Iterable[str]) -> list[dict]:
 def render_profile(room: Path, proxy_port: int, readable: Iterable[Path] = ()) -> str:
     room = Path(os.path.realpath(room))
     allowed = [room, *(Path(os.path.realpath(path)) for path in readable)]
+    # Path walking needs metadata on each ancestor; nothing else outside the allowed trees is stat-able.
+    ancestors = sorted({str(parent) for path in [*allowed, *map(Path, RUNTIME_READ)] for parent in path.parents})
     lines = [
         "(version 1)",
-        "(allow default)",
-        "(deny process-info* (target others))",
-        "(deny file-read* " + " ".join(_subpath(Path(item)) for item in DENIED_READ_ROOTS) + ")",
-        # Stat on known paths (e.g. path walking) is fine; listing and reading are not.
-        "(allow file-read-metadata)",
-        "(allow file-read* " + " ".join(_subpath(path) for path in allowed) + ")",
-        '(deny file-write* (subpath "/"))',
+        "(deny default)",
+        '(import "system.sb")',
+        "(allow process-exec* process-fork)",
+        "(allow signal (target self))",
+        "(allow sysctl-read)",
+        '(allow ipc-posix-shm (ipc-posix-name "apple.shm.notification_center"))',
+        "(allow file-read-metadata " + " ".join(_literal(Path(item)) for item in ancestors) + ")",
+        "(allow file-read* " + " ".join(_subpath(path) for path in [*map(Path, RUNTIME_READ), *allowed]) + ")",
         '(allow file-write* ' + _subpath(room) + ' (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/fd/"))',
-        "(deny network-outbound)",
         f'(allow network-outbound (remote ip "localhost:{int(proxy_port)}"))',
     ]
     return "\n".join(lines) + "\n"
@@ -129,13 +141,46 @@ def room_env(room: Path, proxy_port: int, extra_path: Iterable[str] = (), extra_
     return env
 
 
+def public_address(text: str) -> bool:
+    """True only for globally routable unicast addresses, unwrapping IPv6 forms that embed IPv4."""
+    try:
+        address = ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped:
+            address = address.ipv4_mapped
+        elif address.sixtofour:
+            address = address.sixtofour
+        elif address in NAT64_PREFIX:
+            address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        elif address.teredo:
+            return False
+    return address.is_global and not address.is_multicast
+
+
+async def _system_resolve(host: str, port: int) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+async def _open_upstream(address: str, port: int):
+    return await asyncio.open_connection(address, port)
+
+
 @dataclass
 class AllowlistProxy:
-    """Loopback HTTPS CONNECT proxy that only tunnels to allowlisted hosts on 443."""
+    """Loopback HTTPS CONNECT proxy that only tunnels to allowlisted hosts on 443.
+
+    The host is resolved once here; if any answer is not a public address the
+    request is refused, otherwise the tunnel goes to the checked address itself
+    (no second lookup, so DNS rebinding between check and connect does not apply).
+    """
 
     allowed_hosts: frozenset[str] = frozenset()
     attempts: list[dict] = field(default_factory=list)
     port: int = 0
+    resolve: Callable[[str, int], Awaitable[list[str]]] = _system_resolve
 
     def __post_init__(self):
         self.allowed_hosts = frozenset(host.lower() for host in self.allowed_hosts)
@@ -167,7 +212,14 @@ class AllowlistProxy:
         try:
             self._loop.run_forever()
         finally:
+            # Cancel open tunnels and let them finish, so no task is destroyed while pending.
             server.close()
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self._loop.run_until_complete(server.wait_closed())
             self._loop.close()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -176,13 +228,18 @@ class AllowlistProxy:
             method, target, *_ = request.split(b"\r\n", 1)[0].decode("latin-1").split(" ")
             host, _, port_text = target.rpartition(":")
             port = int(port_text) if port_text.isdigit() else 0
-            allowed = method == "CONNECT" and self.permits(host, port)
-            self.attempts.append({"method": method, "target": target, "allowed": allowed})
-            if not allowed:
+            attempt = {"method": method, "target": target, "allowed": False}
+            self.attempts.append(attempt)
+            if method == "CONNECT" and self.permits(host, port):
+                addresses = await asyncio.wait_for(self.resolve(host, port), 10)
+                attempt["resolved"] = addresses
+                attempt["allowed"] = bool(addresses) and all(public_address(item) for item in addresses)
+            if not attempt["allowed"]:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 return
-            upstream_reader, upstream_writer = await asyncio.wait_for(asyncio.open_connection(host, port), 15)
+            attempt["connected"] = addresses[0]
+            upstream_reader, upstream_writer = await asyncio.wait_for(_open_upstream(addresses[0], port), 15)
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
             await asyncio.gather(_pipe(reader, upstream_writer), _pipe(upstream_reader, writer))
@@ -232,5 +289,13 @@ def copy_probe(room: Path) -> Path:
     return target
 
 
+def _quote(path: Path) -> str:
+    return '"{}"'.format(str(path).replace("\\", "\\\\").replace('"', '\\"'))
+
+
 def _subpath(path: Path) -> str:
-    return '(subpath "{}")'.format(str(path).replace("\\", "\\\\").replace('"', '\\"'))
+    return f"(subpath {_quote(path)})"
+
+
+def _literal(path: Path) -> str:
+    return f"(literal {_quote(path)})"

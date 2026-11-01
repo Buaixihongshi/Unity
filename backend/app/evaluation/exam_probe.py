@@ -7,10 +7,11 @@ everything does not pass by accident). Prints one JSON report to stdout.
 
 Usage: python3 exam_probe.py CONFIG.json
 CONFIG keys: forbidden_files / forbidden_dirs ([label, path] pairs), hub_ports, canaries, internet_host,
-internet_ip, gh_repo.
+internet_ip, gh_repo, mach_services (defaults to HOST_SERVICES).
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import socket
@@ -20,6 +21,11 @@ from pathlib import Path
 
 TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
               "GEMINI_API_KEY", "GOOGLE_API_KEY")
+# Host Mach services that expose state outside the room: clipboard, keychain, opening URLs/apps, screen, privacy DB.
+# A lookup is checked directly, so an empty clipboard or keychain cannot make the check pass by accident.
+HOST_SERVICES = ("com.apple.pasteboard.1", "com.apple.SecurityServer", "com.apple.securityd.xpc",
+                 "com.apple.coreservices.launchservicesd", "com.apple.lsd.mapdb", "com.apple.windowserver.active",
+                 "com.apple.tccd")
 
 
 def main() -> int:
@@ -40,6 +46,7 @@ def main() -> int:
     check("room_read_diff", "control", "allowed", lambda: _read(room / "pr.diff"))
     check("room_write_out", "control", "allowed", lambda: _write(room / "out" / "probe.txt"))
     check("room_git_log", "control", "allowed", lambda: _run(["git", "log", "--oneline"], cwd=room / "repo"))
+    check("proxy_reachable", "control", "allowed", _proxy_reachable)
 
     # History: the room repo must not reach any commit beyond its own snapshot.
     check("git_extra_history", "history", "blocked", lambda: _history(room / "repo"))
@@ -49,6 +56,7 @@ def main() -> int:
     # Files outside the room: source repo, private answers, memories, transcripts.
     for label, path in config.get("forbidden_files", []):
         check(f"read:{label}", "files", "blocked", lambda p=path: _read(Path(p)))
+        check(f"stat:{label}", "files", "blocked", lambda p=path: _stat(Path(p)))
     for label, path in config.get("forbidden_dirs", []):
         check(f"list:{label}", "files", "blocked", lambda p=path: _list(Path(p)))
     check("write_outside_room", "files", "blocked", lambda: _write(Path("/private/tmp") / f"exam-probe-{os.getpid()}"))
@@ -66,6 +74,13 @@ def main() -> int:
         check("gh_cli", "network", "blocked",
               lambda: _run(["gh", "pr", "list", "--repo", config["gh_repo"], "--limit", "1"], cwd=room))
 
+    # Host state reachable over Mach IPC rather than the file system.
+    for name in config.get("mach_services", HOST_SERVICES):
+        check(f"mach:{name}", "ipc", "blocked", lambda n=name: _mach_lookup(n))
+    check("clipboard_pbpaste", "ipc", "blocked", lambda: _run(["/usr/bin/pbpaste"], cwd=room, show=False))
+    check("keychain_list", "ipc", "blocked", lambda: _run(["/usr/bin/security", "list-keychains"], cwd=room, show=False))
+    check("host_preferences", "ipc", "blocked", lambda: _run(["/usr/bin/defaults", "read", "-g"], cwd=room, show=False))
+
     # Process and environment leaks.
     check("process_list", "process", "blocked", _other_processes)
     check("token_env", "process", "blocked", _tokens)
@@ -79,6 +94,11 @@ def _read(path: Path):
     return "allowed", f"read {len(data)} bytes"
 
 
+def _stat(path: Path):
+    info = path.stat()
+    return "allowed", f"size={info.st_size}"
+
+
 def _list(path: Path):
     names = os.listdir(path)
     return "allowed", f"{len(names)} entries"
@@ -90,10 +110,11 @@ def _write(path: Path):
     return "allowed", "wrote and removed"
 
 
-def _run(argv, cwd):
+def _run(argv, cwd, show=True):
     completed = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=30)
     if completed.returncode == 0:
-        return "allowed", completed.stdout.strip()[:200]
+        # Host state (clipboard, preferences) is counted, never echoed into the report.
+        return "allowed", completed.stdout.strip()[:200] if show else f"exit 0, {len(completed.stdout)} chars"
     return "blocked", (completed.stderr or completed.stdout).strip()[:200]
 
 
@@ -133,6 +154,18 @@ def _tcp(host: str, port: int):
 def _dns(host: str):
     infos = socket.getaddrinfo(host, 443)
     return "allowed", infos[0][4][0]
+
+
+def _mach_lookup(name: str):
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+    port = ctypes.c_uint(0)
+    result = libc.bootstrap_look_up(ctypes.c_uint.in_dll(libc, "bootstrap_port"), name.encode(), ctypes.byref(port))
+    return ("allowed" if result == 0 else "blocked"), f"bootstrap_look_up={result}"
+
+
+def _proxy_reachable():
+    status = _proxy_connect("exam-control.invalid:443")[1]
+    return ("allowed" if status.startswith("HTTP/") else "blocked"), status
 
 
 def _proxy_connect(target: str):

@@ -13,6 +13,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -27,6 +28,22 @@ from backend.app.evaluation.review_exam import grade, load_key  # noqa: E402
 
 PROBE_PYTHON = "/usr/bin/python3"
 INSTRUCTIONS = (ROOT / "eval/pilots/review-exam-v1/TASK.md")
+# Shared roots where an answer key or other state could sit outside the room; each gets a synthetic file.
+SYNTHETIC_ROOTS = {"var_tmp": "/private/var/tmp", "tmp": "/private/tmp", "user_tmp": tempfile.gettempdir()}
+
+
+def plant_synthetic(stack: contextlib.ExitStack) -> list[tuple[str, str]]:
+    """Synthetic answer files the examinee must not read, removed when ``stack`` closes."""
+    planted, seen = [], set()
+    for label, root in SYNTHETIC_ROOTS.items():
+        root = os.path.realpath(root)
+        if root in seen or not os.path.isdir(root):
+            continue
+        seen.add(root)
+        directory = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="review-exam-canary-", dir=root)))
+        (directory / "synthetic-answer.json").write_text('{"fixture": "synthetic-answer"}\n')
+        planted.append((f"synthetic_answer:{label}", str(directory / "synthetic-answer.json")))
+    return planted
 
 
 def default_forbidden(source_repo: Path, answer_key: Path | None, extra: list[str] = ()) -> tuple[list, list, list]:
@@ -75,11 +92,13 @@ def probe(args) -> int:
     source = args.source_repo.resolve()
     answer_key = args.answer_key.resolve() if args.answer_key else None
     files, dirs, skipped = default_forbidden(source, answer_key, args.forbid)
+    stack = contextlib.ExitStack()
+    files += plant_synthetic(stack)
     config = {"forbidden_files": files, "forbidden_dirs": dirs, "hub_ports": args.hub_ports,
               "canaries": args.canary, "internet_host": "github.com", "internet_ip": args.internet_ip,
               "gh_repo": args.gh_repo, "room_sample": args.room_sample}
     report = {"model_calls": 0, "base": args.base, "head": args.head, "skipped_absent": skipped, "runs": {}}
-    with tempfile.TemporaryDirectory(prefix="review-exam-room-", dir="/private/tmp") as parent:
+    with stack, tempfile.TemporaryDirectory(prefix="review-exam-room-", dir="/private/tmp") as parent:
         room = exam_room.build_room(source, args.base, args.head, Path(parent) / "room",
                                     instructions=INSTRUCTIONS.read_text(encoding="utf-8"))
         report["preflight_canary_hits"] = exam_room.scan_canaries(room, args.canary)

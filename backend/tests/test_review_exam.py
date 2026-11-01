@@ -1,7 +1,14 @@
+import gc
 import json
+import logging
 import socket
 import subprocess
+import tempfile
 import threading
+import time
+from pathlib import Path
+
+import asyncio
 
 import pytest
 
@@ -83,11 +90,98 @@ def test_proxy_only_tunnels_allowlisted_hosts_on_443():
     assert not proxy.permits("127.0.0.1", 443)
 
 
-def test_profile_limits_network_to_proxy_port(tmp_path):
-    profile = exam_room.render_profile(tmp_path, 4567)
+def test_profile_denies_by_default_and_opens_only_room_and_runtime(tmp_path):
+    room = tmp_path / "room"
+    room.mkdir()
+    profile = exam_room.render_profile(room, 4567)
+    assert "(deny default)" in profile and "(allow default)" not in profile
+    assert '(import "system.sb")' in profile
     assert '(allow network-outbound (remote ip "localhost:4567"))' in profile
-    assert "(deny network-outbound)" in profile
-    assert '(deny file-write* (subpath "/"))' in profile
+    # No Mach service beyond the system.sb baseline (pasteboard, keychain, ...).
+    assert "mach-lookup" not in profile
+    reads = next(line for line in profile.splitlines() if line.startswith("(allow file-read* "))
+    assert f'(subpath "{room.resolve()}")' in reads and "/private/var/tmp" not in reads
+    assert '(subpath "/Users")' not in reads and '(subpath "/usr/local")' not in reads
+    metadata = next(line for line in profile.splitlines() if line.startswith("(allow file-read-metadata "))
+    assert "(subpath" not in metadata and f'(literal "{room.resolve().parent}")' in metadata
+
+
+@pytest.mark.parametrize("address, public", [
+    ("93.184.216.34", True), ("2606:4700:4700::1111", True),
+    ("127.0.0.1", False), ("10.0.0.8", False), ("192.168.1.2", False), ("172.16.0.1", False),
+    ("169.254.169.254", False), ("100.64.0.1", False), ("0.0.0.0", False), ("224.0.0.1", False),
+    ("::1", False), ("fe80::1%en0", False), ("fc00::1", False), ("::", False),
+    ("::ffff:127.0.0.1", False), ("::ffff:93.184.216.34", True), ("64:ff9b::7f00:1", False),
+    ("2002:7f00:1::", False), ("not-an-ip", False),
+])
+def test_public_address_rejects_loopback_private_link_local_and_wrapped_forms(address, public):
+    assert exam_room.public_address(address) is public
+
+
+def _connect_status(port, target):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        conn.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+        return conn.recv(256).split(b"\r\n", 1)[0].decode()
+
+
+def _fake_resolver(*answers):
+    calls = []
+
+    async def resolve(host, port):
+        calls.append(host)
+        return list(answers[min(len(calls), len(answers)) - 1])
+    return resolve, calls
+
+
+@pytest.mark.parametrize("answer", [
+    ["127.0.0.1"], ["::1"], ["10.1.2.3"], ["fe80::1"], ["::ffff:127.0.0.1"],
+    ["93.184.216.34", "127.0.0.1"], ["2606:4700:4700::1111", "fc00::1"], [],
+])
+def test_proxy_refuses_allowlisted_host_resolving_to_non_public_address(monkeypatch, answer):
+    opened = []
+
+    async def never_open(address, port):
+        opened.append(address)
+        raise AssertionError("must not connect")
+    monkeypatch.setattr(exam_room, "_open_upstream", never_open)
+    resolve, _ = _fake_resolver(answer)
+    with exam_room.AllowlistProxy(frozenset({"api.exam.invalid"}), resolve=resolve) as proxy:
+        assert _connect_status(proxy.port, "api.exam.invalid:443").startswith("HTTP/1.1 403")
+    assert opened == [] and proxy.attempts[0]["allowed"] is False
+
+
+def test_proxy_connects_to_the_checked_address_without_resolving_again(monkeypatch):
+    fixture = socket.socket()
+    fixture.bind(("127.0.0.1", 0))
+    fixture.listen()
+    threading.Thread(target=lambda: fixture.accept()[0].sendall(b"fixture-upstream"), daemon=True).start()
+    opened = []
+
+    async def open_fixture(address, port):
+        opened.append((address, port))
+        return await asyncio.open_connection(*fixture.getsockname())
+    monkeypatch.setattr(exam_room, "_open_upstream", open_fixture)
+    # A second lookup would rebind to loopback; the proxy must use the first, checked answer.
+    resolve, calls = _fake_resolver(["93.184.216.34"], ["127.0.0.1"])
+    with exam_room.AllowlistProxy(frozenset({"api.exam.invalid"}), resolve=resolve) as proxy:
+        with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as conn:
+            conn.sendall(b"CONNECT api.exam.invalid:443 HTTP/1.1\r\n\r\n")
+            received = b""
+            while b"fixture-upstream" not in received and (chunk := conn.recv(256)):
+                received += chunk
+    fixture.close()
+    assert received.startswith(b"HTTP/1.1 200") and b"fixture-upstream" in received
+    assert opened == [("93.184.216.34", 443)] and calls == ["api.exam.invalid"]
+
+
+def test_proxy_exit_leaves_no_pending_handler(caplog):
+    caplog.set_level(logging.ERROR, logger="asyncio")
+    with exam_room.AllowlistProxy(frozenset()) as proxy:
+        idle = socket.create_connection(("127.0.0.1", proxy.port))
+        time.sleep(0.2)  # handler is now waiting for the request line
+    idle.close()
+    gc.collect()
+    assert "pending" not in caplog.text and "Event loop is closed" not in caplog.text
 
 
 def _repo(path):
@@ -119,29 +213,39 @@ def test_fake_examinee_is_blocked_in_room_but_leaks_without_sandbox(tmp_path):
     secret = tmp_path / "private" / "key.json"
     secret.parent.mkdir()
     secret.write_text("{}")
+    # #95: shared roots outside the old deny list; the room itself sits under /private/tmp or /private/var/folders.
+    var_tmp = Path(tempfile.mkdtemp(prefix="review-exam-test-", dir="/private/var/tmp"))
+    (var_tmp / "synthetic-answer.json").write_text("fixture-only")
     hub = socket.socket()
     hub.bind(("127.0.0.1", 0))
     hub.listen()
+    hub_port = hub.getsockname()[1]
     threading.Thread(target=_accept_until_closed, args=(hub,), daemon=True).start()
     room = exam_room.build_room(source, "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
     assert exam_room.scan_canaries(room, ["SECRET-FIX-TITLE"]) == []
     script = exam_room.copy_probe(room)
     config = script.parent / "config.json"
     config.write_text(json.dumps({
-        "forbidden_files": [["answer_key", str(secret)], ["source_git", str(source / ".git/HEAD")]],
+        "forbidden_files": [["answer_key", str(secret)], ["source_git", str(source / ".git/HEAD")],
+                            ["var_tmp", str(var_tmp / "synthetic-answer.json")]],
         "forbidden_dirs": [["answer_dir", str(secret.parent)]],
-        "hub_ports": [hub.getsockname()[1]], "canaries": ["SECRET-FIX-TITLE"],
+        "hub_ports": [hub_port], "canaries": ["SECRET-FIX-TITLE"],
     }))
     command = ["/usr/bin/python3", str(script), str(config)]
 
-    boxed = json.loads(exam_room.run_in_room(command, room, timeout=120)["stdout"])
+    try:
+        boxed = json.loads(exam_room.run_in_room(command, room, timeout=120)["stdout"])
+        control = json.loads(exam_room.run_in_room(command, room, sandbox=False, timeout=120)["stdout"])
+    finally:
+        hub.close()
+        (var_tmp / "synthetic-answer.json").unlink()
+        var_tmp.rmdir()
     assert boxed["passed"], [item for item in boxed["checks"] if not item["ok"]]
-
-    control = json.loads(exam_room.run_in_room(command, room, sandbox=False, timeout=120)["stdout"])
     leaked = {item["id"] for item in control["checks"] if not item["ok"]}
-    assert {"read:answer_key", "read:source_git", "list:answer_dir",
-            f"hub_direct:{hub.getsockname()[1]}", "write_outside_room"} <= leaked
-    hub.close()
+    # The same checks must see each leak without the sandbox, otherwise "blocked" proves nothing.
+    assert {"read:answer_key", "stat:answer_key", "read:source_git", "list:answer_dir", "read:var_tmp",
+            f"hub_direct:{hub_port}", "write_outside_room", "mach:com.apple.pasteboard.1",
+            "mach:com.apple.SecurityServer", "clipboard_pbpaste", "keychain_list", "host_preferences"} <= leaked
 
 
 def test_canary_scan_finds_leaked_answer(tmp_path):
