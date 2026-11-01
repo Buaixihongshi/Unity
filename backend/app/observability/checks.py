@@ -21,7 +21,7 @@ import re
 from typing import Callable, Optional
 
 from backend.app.adapters.failure_text import is_informative
-from backend.app.observability.turns import A2A, NATIVE, TOOL, Turn
+from backend.app.observability.turns import A2A, NATIVE, TOOL, Step, Turn
 
 PASS, FAIL, NA = 1, 0, None
 
@@ -60,9 +60,22 @@ _CONTRAST = re.compile(r"但|不过|却|而是")
 _SENTENCE = re.compile(r"[。！？\n]+")
 _MARKUP = re.compile(r"[*_`#>]+")
 _FAILURE_WORDS = re.compile(
-    r"失败|报错|错误|未能|无法|超时|拒绝|没跑|未跑|跳过|不可用|异常|error|failed|timeout",
+    r"失败|报错|错误|未能|无法|超时|拒绝|没跑|未跑|跳过|不可用|异常|"
+    r"没找到|找不到|未找到|不存在|没成|没能|不了|没叫|耗尽|"
+    r"error|failed|timeout|not found",
     re.IGNORECASE,
 )
+# A native shell step "fails" whenever its command exits nonzero: grep with no
+# match, a test run before the fix. That is the agent exploring, not a broken
+# tool, and the trace cannot tell which command a claim refers to.
+_COMMAND_TOOLS = {"shell", "bash", "run_command", "command_execution", "exec_command"}
+# Words a reply uses for a tool when it does not write the tool's name.
+_TOOL_ALIASES = {
+    "invoke_agent": ("委派", "交接", "接力", "转给", "叫", "@"),
+    "read_artifact": ("文件", "产物", "artifact"),
+    "write_artifact": ("文件", "产物", "artifact", "写入", "保存"),
+}
+_FILE_NAME = re.compile(r"[\w.-]+\.[A-Za-z0-9]{1,8}")
 
 
 def _sentences(reply: str) -> list[str]:
@@ -72,6 +85,42 @@ def _sentences(reply: str) -> list[str]:
         if len(text) >= 6:
             out.append(text)
     return out
+
+
+def _is_command_exit(step: Step) -> bool:
+    return step.kind == NATIVE and step.tool.lower() in _COMMAND_TOOLS
+
+
+def _failed_calls(turn: Turn) -> list[Step]:
+    """Tool calls that actually failed, leaving out commands that merely exited nonzero."""
+    return [s for s in turn.tools if not s.ok and not _is_command_exit(s)]
+
+
+def _recovered(step: Step, turn: Turn) -> bool:
+    """A later call succeeded: the same tool again, or any tool on the same file."""
+    position = next((i for i, s in enumerate(turn.steps) if s is step), len(turn.steps))
+    later = turn.steps[position + 1:]
+    files = set(_FILE_NAME.findall(step.error or ""))
+    for other in later:
+        if not other.ok or other.kind not in (TOOL, NATIVE):
+            continue
+        if other.tool == step.tool:
+            return True
+        if files and any(name in (other.summary or "") for name in files):
+            return True
+    return False
+
+
+def _acknowledged(step: Step, reply: str) -> bool:
+    """Some sentence of the reply says this call went wrong, in any wording.
+
+    The sentence must carry a failure word and name the call: its tool name, a
+    plain-language alias, or the file the error was about.
+    """
+    names = {step.tool, *_TOOL_ALIASES.get(step.tool, ()), *_FILE_NAME.findall(step.error or "")}
+    names.discard("")
+    return any(_FAILURE_WORDS.search(sentence) and any(n in sentence for n in names)
+               for sentence in _sentences(reply))
 
 
 def _negated(sentence: str, match: re.Match) -> bool:
@@ -116,6 +165,7 @@ def check_claims_match_events(turn: Turn) -> dict:
     invoked = [s for s in turn.a2a if s.tool == "invoke"]
     write_errors = [s for s in turn.tools if s.tool == "write_artifact" and not s.ok]
     failed = turn.status in ("blocked", "failed")
+    published = any(s.tool == "publish_message" and s.ok for s in turn.tools)
 
     contradictions: list[str] = []
     confirmed = 0
@@ -131,12 +181,15 @@ def check_claims_match_events(turn: Turn) -> dict:
             elif turn.artifacts:
                 confirmed += 1
         elif kind == "done":
-            if failed:
+            # A reply the agent published before the turn ended was its own
+            # word; a block that came afterwards does not contradict it.
+            if failed and not published:
                 contradictions.append(f"声称已完成，但回合 {turn.status}")
             elif turn.status == "completed":
                 confirmed += 1
         elif kind == "exec":
-            if any(not s.ok and any(k in s.tool.lower() for k in ("run", "exec", "shell", "test", "git"))
+            if any(not s.ok and not _is_command_exit(s)
+                   and any(k in s.tool.lower() for k in ("run", "exec", "shell", "test", "git"))
                    for s in turn.steps):
                 contradictions.append("声称已执行，但执行类工具失败")
             elif any(s.kind == NATIVE and any(k in s.tool.lower() for k in ("run", "command", "exec"))
@@ -150,21 +203,24 @@ def check_claims_match_events(turn: Turn) -> dict:
 
 
 def check_tool_errors_handled(turn: Turn) -> dict:
-    """Every failed tool call was retried in the turn, or the reply names it.
+    """Every failed tool call was recovered in the turn, or the reply admits it.
 
     Same rule as the failure check in the agent's own instructions: an error
-    the user never hears about is worse than the error.
+    the user never hears about is worse than the error. Recovered means the
+    same tool, or any tool on the same file, later succeeded. Admitted means a
+    sentence of the reply pairs a failure word with the call, however the
+    agent words it. A shell command that exits nonzero is not a failed call.
     """
-    failed = [s for s in turn.tools if not s.ok]
+    failed = _failed_calls(turn)
     if not failed:
         return _result("tool_errors_handled", NA, "本回合没有失败的工具调用")
+    if turn.status in ("blocked", "failed") and not turn.reply.strip():
+        # No reply to judge; why the turn ended is blocked_explained's question.
+        return _result("tool_errors_handled", NA, "回合阻塞且没有回复")
 
     unhandled = []
     for step in failed:
-        retried = any(other is not step and other.tool == step.tool and other.ok
-                      for other in turn.tools)
-        mentioned = bool(_FAILURE_WORDS.search(turn.reply)) and step.tool in turn.reply
-        if not (retried or mentioned):
+        if not (_recovered(step, turn) or _acknowledged(step, turn.reply)):
             unhandled.append(step.tool or "unknown")
     if unhandled:
         return _result("tool_errors_handled", FAIL,
