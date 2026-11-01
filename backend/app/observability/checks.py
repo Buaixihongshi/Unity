@@ -21,6 +21,7 @@ import re
 from typing import Callable, Optional
 
 from backend.app.adapters.failure_text import is_informative
+from backend.app.observability.pricing import total_tokens
 from backend.app.observability.turns import A2A, NATIVE, TOOL, Step, Turn
 
 PASS, FAIL, NA = 1, 0, None
@@ -145,7 +146,8 @@ def claims(reply: str) -> list[tuple[str, str]]:
 # ---- the checks -------------------------------------------------------------
 
 def _result(name: str, value, note: str) -> dict:
-    return {"name": name, "source": "code", "value": value, "note": note}
+    return {"name": name, "source": "code", "layer": LAYER.get(name, AGENT),
+            "value": value, "note": note}
 
 
 def check_claims_match_events(turn: Turn) -> dict:
@@ -240,7 +242,7 @@ def check_blocked_explained(turn: Turn) -> dict:
     if is_informative(turn.error):
         return _result("blocked_explained", PASS,
                        f"[{turn.failure_class}] {turn.error.strip()[:80]}")
-    if turn.reply.strip():
+    if _FAILURE_WORDS.search(turn.reply):
         return _result("blocked_explained", PASS, "回复里说明了失败")
     if turn.error.strip():
         return _result("blocked_explained", FAIL,
@@ -248,17 +250,74 @@ def check_blocked_explained(turn: Turn) -> dict:
     return _result("blocked_explained", FAIL, "回合失败且没有任何说明")
 
 
+_ENDED_MISSION = {"blocked", "completed", "failed", "completed_with_warnings"}
+
+
+def check_turn_closed(turn: Turn) -> dict:
+    """A turn whose mission has ended must have ended too.
+
+    Without a terminal event the turn's status is a guess ("running"), and
+    every check that reads the status — a claimed "done" against a block —
+    would be judging a guess.
+    """
+    if turn.status != "running":
+        return _result("turn_closed", PASS, f"回合以 {turn.status} 结束")
+    if turn.mission_status in _ENDED_MISSION:
+        return _result("turn_closed", FAIL, f"任务已 {turn.mission_status}，回合却没有终态事件")
+    return _result("turn_closed", NA, "任务仍在进行")
+
+
+def check_usage_reported(turn: Turn) -> dict:
+    """A turn that produced something must have a usage record with tokens in it.
+
+    Without one its cost is invisible, and spend totals quietly undercount.
+    A turn that produced nothing may well have consumed nothing.
+    """
+    if turn.status == "running":
+        return _result("usage_reported", NA, "回合未结束")
+    if turn.provider_id == "fake":
+        return _result("usage_reported", NA, "演示 provider 不计费")
+    if total_tokens(turn.usage) > 0:
+        return _result("usage_reported", PASS, f"{total_tokens(turn.usage)} tokens")
+    if not (turn.reply.strip() or turn.steps):
+        return _result("usage_reported", NA, "回合没有产出，也没有用量")
+    missing = "没有用量记录" if turn.usage is None else "用量全为 0"
+    return _result("usage_reported", FAIL, f"回合有产出，但{missing}（{turn.provider_id or '未知 provider'}）")
+
+
+# Trace checks ask whether the record can be believed; agent checks ask whether
+# the agent behaved. They are reported apart because a pipeline bug and an
+# agent's mistake have different owners and different fixes.
+TRACE, AGENT = "trace", "agent"
+
 CHECKS: dict[str, Callable[[Turn], dict]] = {
+    "turn_closed": check_turn_closed,
+    "blocked_explained": check_blocked_explained,
+    "usage_reported": check_usage_reported,
     "claims_match_events": check_claims_match_events,
     "tool_errors_handled": check_tool_errors_handled,
-    "blocked_explained": check_blocked_explained,
+}
+
+LAYER: dict[str, str] = {
+    "turn_closed": TRACE,
+    "blocked_explained": TRACE,
+    "usage_reported": TRACE,
+    "claims_match_events": AGENT,
+    "tool_errors_handled": AGENT,
 }
 
 WHAT: dict[str, str] = {
-    "claims_match_events": "回复里的行动声明不与本回合事件矛盾",
-    "tool_errors_handled": "失败的工具调用被重试或在回复中说明",
+    "turn_closed": "任务结束时回合有终态事件",
     "blocked_explained": "失败/阻塞的回合给出了可读的原因",
+    "usage_reported": "有产出的回合记录了用量",
+    "claims_match_events": "回复里的行动声明不与本回合事件矛盾",
+    "tool_errors_handled": "失败的工具调用被恢复或在回复中承认",
 }
+
+# A trace failure that makes the agent checks' evidence untrustworthy. Missing
+# usage or a vague block reason does not change what the agent said or did;
+# a turn with no terminal event has no real status to compare claims against.
+_GATES = ("turn_closed",)
 
 
 def run_checks(turn: Turn) -> list[dict]:
@@ -266,14 +325,40 @@ def run_checks(turn: Turn) -> list[dict]:
 
     Observability must not be able to break the page it feeds. If a check has a
     bug, that is a bug to fix in the check, not a reason for a blank screen.
+    Trace checks run first; when one of the gates fails, the agent checks are
+    `n/a` rather than graded on a record that cannot be believed.
     """
     out = []
+    gated = ""
     for name, check in CHECKS.items():
+        if gated and LAYER[name] == AGENT:
+            out.append(_result(name, NA, f"trace 不可信，不评（{gated}）"))
+            continue
         try:
-            out.append(check(turn))
+            result = check(turn)
         except Exception:  # noqa: BLE001 - a check must never break the reader
-            out.append(_result(name, NA, "check error"))
+            result = _result(name, NA, "check error")
+        out.append(result)
+        if name in _GATES and result["value"] == FAIL:
+            gated = name
     return out
+
+
+# A check earns its place by being able to fail. These thresholds only decide
+# when there is enough data to say it has not.
+_SILENT_AFTER = 20  # scored turns with no failure
+_BLIND_AFTER = 50   # turns, of which almost all are n/a
+_BLIND_RATE = 0.95
+
+
+def health(passed: int, failed: int, na: int) -> Optional[str]:
+    """Why this check's numbers may not mean much, or None when they do."""
+    total = passed + failed + na
+    if total >= _BLIND_AFTER and na / total >= _BLIND_RATE:
+        return f"{round(na / total * 100)}% 的回合判不了，覆盖不足"
+    if passed + failed >= _SILENT_AFTER and failed == 0:
+        return f"{passed} 次评判从未失败，可能没有判别力"
+    return None
 
 
 def summarize(turns: list[Turn]) -> dict:
@@ -296,6 +381,8 @@ def summarize(turns: list[Turn]) -> dict:
         scored = passed + failed
         rows.append({
             "name": name,
+            "layer": LAYER[name],
+            "health": health(passed, failed, na),
             "what": what,
             "passed": passed,
             "failed": failed,

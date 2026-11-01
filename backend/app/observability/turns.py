@@ -34,6 +34,14 @@ ARTIFACT = "artifact"
 
 STATUS_RUNNING = "running"
 
+# failure_class values that say the turn's environment failed, not its agent.
+ENVIRONMENT_FAILURES = frozenset({
+    "network", "dns", "dns_busy", "upstream", "tls_verification", "endpoint_policy",
+    "authentication", "configuration", "network_policy", "managed_preferences",
+    "filesystem_permission", "invalid_arguments", "budget_exhausted",
+})
+USER_FAILURES = frozenset({"stopped"})
+
 
 def _ts(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
@@ -123,6 +131,7 @@ class Turn:
     reply: str = ""
     error: str = ""
     failure_code: str = ""  # what the adapter itself reported, when it knew
+    mission_status: str = ""
     steps: list[Step] = field(default_factory=list)
     usage: Optional[dict] = None
     cost_usd: Optional[float] = None
@@ -167,6 +176,23 @@ class Turn:
         return failure_code(self.error)
 
     @property
+    def attribution(self) -> Optional[str]:
+        """Whose failure a blocked/failed turn is: "environment", "user" or "agent".
+
+        Network, credentials and configuration are not the agent's doing and
+        must not count against it. "agent" includes failures nobody could
+        classify: unexplained is not the same as innocent.
+        """
+        cls = self.failure_class
+        if cls is None:
+            return None
+        if cls in ENVIRONMENT_FAILURES:
+            return "environment"
+        if cls in USER_FAILURES:
+            return "user"
+        return "agent"
+
+    @property
     def cost_known(self) -> bool:
         return self.cost_usd is not None
 
@@ -189,6 +215,7 @@ class Turn:
             "reply": self.reply,
             "error": self.error,
             "failure_class": self.failure_class,
+            "attribution": self.attribution,
             "steps": [step.to_dict() for step in self.steps],
             "usage": self.usage,
             "tokens": pricing.total_tokens(self.usage),
@@ -215,6 +242,7 @@ def _turn_seed(turn_id: str, mission: Mission, payload: dict) -> Turn:
         agent_id=str(payload.get("agent_id") or ""),
         provider_id=str(payload.get("provider_id") or ""),
         status=STATUS_RUNNING,
+        mission_status=str(getattr(mission.status, "value", mission.status) or ""),
         purpose=str(payload.get("purpose") or ""),
         started_at=_iso(started),
     )

@@ -736,9 +736,12 @@ export interface OnboardingFirstChatResponse {
 /** Turn-level observability (GET /api/observability). */
 export type CheckValue = 1 | 0 | null;
 
+export type ObservabilityLayer = "trace" | "agent";
+
 export interface ObservabilityCheck {
   name: string;
   source: "code" | "judge";
+  layer?: ObservabilityLayer;
   value: CheckValue;
   note: string;
 }
@@ -786,6 +789,8 @@ export interface ObservabilityTurn {
   duration_ms: number;
   reply: string;
   error: string;
+  failure_class?: string | null;
+  attribution?: "environment" | "user" | "agent" | null;
   steps: ObservabilityStep[];
   usage: UsageRecord | null;
   tokens: number;
@@ -841,6 +846,9 @@ export interface ObservabilityPayload {
 /** Global observability (settings → 观测). */
 export interface ObservabilityOverviewCheck {
   name: string;
+  layer?: ObservabilityLayer;
+  /** Why the numbers may not mean much: never fails, or almost always n/a. */
+  health?: string | null;
   what: string;
   pass: number;
   fail: number;
@@ -866,6 +874,7 @@ export interface ObservabilityOverviewTurn {
 
 export interface ObservabilityFailure {
   check: string;
+  layer?: ObservabilityLayer;
   note: string;
   agent: string;
   turn_id: string;
@@ -909,6 +918,10 @@ export interface ObservabilityOverviewPayload {
     cost: number;
     tools: number;
     native: number;
+    /** Blocked turns the agent owns; environment and user failures are counted apart. */
+    blocked?: number;
+    blocked_environment?: number;
+    blocked_user?: number;
   }[];
   by_provider: { provider: string; usd: number; turns: number; unknown: number; tokens: number }[];
   daily: { date: string; turns: number; cost: number }[];
