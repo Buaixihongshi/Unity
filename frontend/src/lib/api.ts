@@ -419,3 +419,13 @@ export async function fetchMemoryHandovers(agentId?: string): Promise<{ handover
   const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
   return parseJson(await fetch(`/api/memory/handovers${query}`), '加载模型交接记录失败');
 }
+
+export interface ArtifactIndexPage {
+  items: Array<import('./artifactSidebar').SidebarArtifact & { event_id: string }>;
+  next_cursor: string | null;
+}
+export async function fetchArtifactIndex(query: string, cursor?: string): Promise<ArtifactIndexPage> {
+  const params = new URLSearchParams({q:query,limit:'50'});
+  if(cursor)params.set('cursor',cursor);
+  return parseJson<ArtifactIndexPage>(await fetch(`/api/artifacts?${params}`), '加载全部仓库失败');
+}

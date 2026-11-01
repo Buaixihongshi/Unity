@@ -304,6 +304,20 @@ class Repository:
         )
         return str(cursor.lastrowid)
 
+    def list_artifact_events(self, limit: int, before_id: int | None = None) -> list[MissionEvent]:
+        # Select latest identity before pagination, including across page boundaries.
+        with self._transaction() as db:
+            rows = db.execute("""
+                SELECT id, mission_id, event_type, payload, created_at FROM events
+                WHERE event_type='artifact' AND (? IS NULL OR id < ?)
+                  AND id IN (SELECT MAX(id) FROM events WHERE event_type='artifact'
+                             GROUP BY mission_id, json_extract(payload, '$.path'))
+                ORDER BY id DESC LIMIT ?
+            """, (before_id, before_id, limit)).fetchall()
+        return [MissionEvent(id=str(row['id']), mission_id=row['mission_id'],
+                             event_type=row['event_type'], payload=json.loads(row['payload']),
+                             created_at=row['created_at']) for row in rows]
+
     def list_events_after(self, mission_id: str, after_id: int) -> list[MissionEvent]:
         with self._transaction() as db:
             rows = db.execute(

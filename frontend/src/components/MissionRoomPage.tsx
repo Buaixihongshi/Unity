@@ -1,4 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { ArtifactSidebar } from "./ArtifactSidebar";
+import { collectConversationArtifacts } from "../lib/artifactSidebar";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { MessagesSquare, Workflow } from "lucide-react";
 import type { StreamState } from "../hooks/useMissionStream";
 import type { ProviderStatusState } from "../hooks/useProviderStatus";
@@ -50,6 +52,7 @@ export function MissionRoomPage(props: {
   hasAutonomousWork?: boolean;
   conversations: ConversationSummary[];
   selectedConversationId?: string;
+  loadedConversationId?: string;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onRenameConversation: (id: string, title: string) => void;
@@ -76,6 +79,28 @@ export function MissionRoomPage(props: {
   revising?: boolean;
   onCancelRevise?: () => void;
 }) {
+  const [pendingArtifact,setPendingArtifact] = useState<{conversationId:string;identity:string}>();
+  const [locateNotice,setLocateNotice] = useState('');
+  const locate = useCallback((identity:string)=>{
+    const card=Array.from(layoutRef.current?.querySelectorAll<HTMLElement>('[data-artifact-identity]') ?? []).find(el=>el.dataset.artifactIdentity===identity);
+    if(!card)return '记录未加载，未找到文件卡片';
+    if(card.closest('details:not([open])'))return '文件卡片在折叠的讨论记录里';
+    card.dispatchEvent(new CustomEvent('artifact-locate',{bubbles:true}));
+    card.scrollIntoView({block:'center',behavior:'smooth'});
+    card.classList.add('artifact-card--located');
+    window.setTimeout(()=>card.classList.remove('artifact-card--located'),1500);
+    return undefined;
+  },[]);
+  useEffect(()=>{
+    if(!pendingArtifact || pendingArtifact.conversationId!==props.selectedConversationId)return;
+    // Wait for selected conversation's persisted timeline, not a fixed delay.
+    if(props.loadedConversationId!==pendingArtifact.conversationId)return;
+    setLocateNotice(locate(pendingArtifact.identity) ?? '已定位');setPendingArtifact(undefined);
+  },[pendingArtifact,props.selectedConversationId,props.loadedConversationId,props.displayMessages,locate]);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [artifactPinned,setArtifactPinned] = useState(false);
+  const onPinnedChange = useCallback((pinned: boolean)=>setArtifactPinned(pinned),[]);
+  const artifacts = collectConversationArtifacts(props.displayMessages);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const tasksEnabled = props.tasksEnabled ?? false;
   const section = tasksEnabled ? props.section : "conversations";
@@ -169,7 +194,7 @@ export function MissionRoomPage(props: {
           onStatusChange={props.onConversationStatusChange}
           onDelete={props.onDeleteConversation}
         />
-        <div className="conversation-layout">
+        <div ref={layoutRef} className={`conversation-layout${artifactPinned ? " has-artifact-sidebar" : ""}`}>
           <section className="conversation-main" aria-label="任务对话">
             {tasksEnabled && props.selectedConversationId ? <SharedWorkWorkspace key={props.selectedConversationId}
               conversationId={props.selectedConversationId} goal={props.detail?.mission.goal ?? ''}
@@ -177,6 +202,14 @@ export function MissionRoomPage(props: {
               onOpenTask={props.onOpenTask}
               chat={timeline} composer={composer} /> : <>{timeline}{composer}</>}
           </section>
+          {locateNotice && <p role="status" className="artifact-locate-notice">{locateNotice}</p>}
+          <ArtifactSidebar items={artifacts} onPinnedChange={onPinnedChange} onLocate={item=>{
+            if(item.conversation_id && item.conversation_id!==props.selectedConversationId){
+              setPendingArtifact({conversationId:item.conversation_id,identity:item.identity});
+              setLocateNotice('正在加载会话…');props.onSelectConversation(item.conversation_id);return '正在加载会话';
+            }
+            const notice=locate(item.identity);setLocateNotice(notice ?? '已定位');return notice;
+          }} />
         </div>
       </div>
         </div>

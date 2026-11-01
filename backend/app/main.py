@@ -1,3 +1,4 @@
+from backend.app.api.artifacts import build_router as build_artifacts_router
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -77,6 +78,7 @@ def create_app(
     app.include_router(build_health_router(app_settings, repository))
     app.include_router(extensions.maintenance_router(app_settings, repository))
     app.include_router(build_agents_router(app_settings))
+    app.include_router(build_artifacts_router(repository))
     app.include_router(build_conversations_router(app_settings, repository, adapter_override=mission_adapter))
     app.include_router(build_hub_settings_router(app_settings))
     app.include_router(build_missions_router(app_settings, repository, adapter_override=mission_adapter))

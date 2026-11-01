@@ -1,0 +1,524 @@
+.conversation-layout {
+  position: relative;
+}
+.conversation-layout.has-artifact-sidebar {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+/* 局部 token 定义 */
+.artifact-tray-trigger,
+.artifact-sidebar {
+  --paper-warm: #eee8dc;
+  --amber: #c88327;
+  --amber-soft: rgba(200, 131, 39, 0.14);
+}
+
+/* 1. 把手（Trigger / Dock Handle）: 侧边手边抽屉把手，带纸感硬微阴影与呼吸微标 */
+.artifact-tray-trigger {
+  position: absolute;
+  right: 0;
+  top: 16px;
+  z-index: 5;
+  width: 38px;
+  padding: 14px 6px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  background: var(--paper-soft);
+  border: 2px solid var(--ink);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  box-shadow: -2px 3px 0 var(--ink);
+  cursor: pointer;
+  letter-spacing: 2.5px;
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.artifact-tray-trigger:hover {
+  background: var(--paper-warm);
+  transform: translateX(-3px);
+  box-shadow: -4px 3px 0 var(--ink);
+}
+.artifact-tray-trigger:active {
+  transform: translateX(-1px);
+  box-shadow: -2px 2px 0 var(--ink);
+}
+.artifact-trigger-glow {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sage-strong);
+  margin-bottom: 4px;
+  box-shadow: 0 0 0 2px var(--sage-soft);
+}
+.artifact-tray-trigger span:not(.artifact-trigger-glow) {
+  writing-mode: horizontal-tb;
+  display: inline-block;
+  margin-top: 6px;
+  background: var(--amber);
+  color: #ffffff;
+  font-family: monospace;
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--ink);
+  box-shadow: 1px 1px 0 var(--ink);
+  line-height: 1.2;
+}
+.artifact-tray-trigger.is-open {
+  visibility: hidden;
+}
+
+/* 2. 侧栏面板容器（Sidebar Panel） */
+.artifact-sidebar {
+  min-height: 0;
+  background: var(--paper-soft);
+  border-left: 2px solid var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  z-index: 12;
+  box-sizing: border-box;
+}
+.artifact-sidebar.is-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: min(380px, 100%);
+  box-shadow: -6px 0 0 rgba(26, 26, 26, 0.15), -14px 0 28px rgba(0, 0, 0, 0.12);
+}
+.artifact-tray-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(26, 26, 26, 0.28);
+  backdrop-filter: blur(2px);
+  z-index: 11;
+  transition: opacity 0.2s ease;
+}
+
+/* 3. 头部 Header */
+.artifact-sidebar header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--ink);
+}
+.artifact-sidebar header strong {
+  margin-right: auto;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: -0.2px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+}
+.artifact-sidebar button,
+.artifact-sidebar input {
+  font: inherit;
+}
+.artifact-sidebar button {
+  cursor: pointer;
+  border: 1.5px solid var(--ink);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: var(--hard-shadow-sm);
+  transition: all 0.1s ease;
+  user-select: none;
+}
+.artifact-sidebar button:hover:not(:disabled) {
+  background: var(--paper-warm);
+}
+.artifact-sidebar button:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+.artifact-sidebar button[aria-pressed="true"] {
+  background: var(--sage-soft);
+  border-color: var(--sage-strong);
+  color: var(--ink);
+  font-weight: 800;
+}
+.artifact-sidebar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+/* 关闭按钮 */
+.artifact-sidebar header button[aria-label="收起产物栏"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* 4. 双域切页控制器（Segmented Control） */
+.artifact-sidebar [role="tablist"] {
+  display: flex;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  padding: 3px;
+  gap: 4px;
+  background: var(--paper-warm);
+  box-shadow: 1.5px 1.5px 0 var(--ink-soft);
+}
+.artifact-sidebar [role="tab"] {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-align: center;
+  transition: all 0.15s ease;
+}
+.artifact-sidebar [role="tab"]:hover {
+  color: var(--ink);
+}
+.artifact-sidebar [role="tab"][aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+  font-weight: 800;
+  box-shadow: var(--hard-shadow-sm);
+}
+
+/* 范围说明手稿批注 */
+.artifact-scope-note {
+  margin: -2px 0 2px;
+  padding: 5px 10px;
+  background: rgba(26, 26, 26, 0.04);
+  border-left: 3px solid var(--sage-strong);
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+/* 5. 搜索栏 */
+.artifact-sidebar input {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+  box-shadow: inset 1px 1px 2px rgba(26, 26, 26, 0.06);
+  outline: none;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.artifact-sidebar input:focus {
+  border-color: var(--ink);
+  box-shadow: var(--hard-shadow-sm);
+}
+.artifact-sidebar input::placeholder {
+  color: var(--ink-faint);
+}
+
+/* 6. 类型筛选 Chips */
+.artifact-kind-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.artifact-kind-filters button {
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--ink-line);
+  background: var(--paper);
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: none;
+}
+.artifact-kind-filters button:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: var(--paper-warm);
+}
+.artifact-kind-filters button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+  font-weight: 700;
+  box-shadow: 1px 1px 0 var(--ink-soft);
+}
+
+/* 7. 产物列表与卡片 */
+.artifact-sidebar-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.artifact-sidebar-list li {
+  padding: 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--hard-shadow-sm);
+  overflow-wrap: anywhere;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.artifact-sidebar-list li:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+.artifact-sidebar-list .artifact-sidebar-open {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+.artifact-sidebar-list .artifact-sidebar-open:active {
+  transform: none;
+}
+.artifact-card-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.artifact-card-title-row strong {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.artifact-card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-top: 1px;
+}
+.artifact-kind-badge {
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--paper-warm);
+  border: 1px solid var(--ink-line);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink);
+  line-height: 1.2;
+}
+.artifact-meta-dot {
+  color: var(--ink-faint);
+  font-weight: 800;
+}
+.artifact-agent-tag {
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 11px;
+}
+.artifact-card-path {
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  font-family: monospace;
+  background: var(--paper-soft);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px dashed var(--ink-line);
+  display: inline-block;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+.artifact-sidebar-list time {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  margin-top: 2px;
+}
+
+/* 跨会话定位卡片提示 */
+.artifact-conversation-link {
+  background: var(--paper-warm) !important;
+  border: 1px dashed var(--ink) !important;
+  border-radius: 4px;
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: var(--ink) !important;
+  text-align: left;
+  box-shadow: none !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.artifact-conv-arrow {
+  color: var(--sage-strong);
+  font-weight: 900;
+  font-size: 12px;
+}
+.artifact-conversation-link:hover {
+  background: var(--paper) !important;
+  border-style: solid !important;
+}
+
+/* 卡片底部操作热区 */
+.artifact-card-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ink-line);
+  margin-top: 4px;
+}
+.artifact-card-actions button,
+.artifact-card-actions a {
+  cursor: pointer;
+  border: 1.2px solid var(--ink);
+  background: var(--paper-soft);
+  color: var(--ink);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  box-shadow: 1px 1px 0 var(--ink);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.1s ease;
+}
+.artifact-card-actions button:hover,
+.artifact-card-actions a:hover {
+  background: var(--paper-warm);
+}
+.artifact-card-actions button:active,
+.artifact-card-actions a:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+.artifact-card-actions a {
+  background: var(--sage-soft);
+  border-color: var(--sage-strong);
+}
+.artifact-card-actions a:hover {
+  background: var(--sage);
+  color: #ffffff;
+}
+
+/* 被定位卡片的高亮态 */
+.artifact-card--located {
+  outline: 2.5px solid var(--sage-strong) !important;
+  background: #f4faf8 !important;
+  box-shadow: 0 0 0 3px rgba(123, 167, 157, 0.35), var(--hard-shadow) !important;
+}
+
+/* 8. 状态、空态与底栏辅助按钮 */
+.artifact-sidebar [role="status"] {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  text-align: center;
+  margin: 4px 0;
+}
+.artifact-sidebar [role="status"]:empty {
+  display: none;
+}
+.artifact-sidebar [role="alert"] {
+  background: var(--danger-soft);
+  border: 1.5px solid var(--danger);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.artifact-sidebar [role="alert"] button {
+  align-self: flex-start;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* 穿透搜索与加载更多按钮 */
+.artifact-sidebar > button:not([role="tab"]) {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  font-weight: 800;
+  border-radius: 6px;
+}
+.artifact-sidebar > p:not([role]):not(.artifact-scope-note) {
+  text-align: center;
+  padding: 20px 10px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  margin: 0;
+  background: rgba(26, 26, 26, 0.02);
+  border: 1px dashed var(--ink-line);
+  border-radius: 6px;
+}
+
+/* 9. 响应式与定位提示 */
+@media (max-width: 980px) {
+  .artifact-tray-trigger {
+    width: auto;
+    writing-mode: horizontal-tb;
+    top: 8px;
+    right: 8px;
+    padding: 6px 12px;
+    border-right: 2px solid var(--ink);
+    border-radius: 6px;
+    box-shadow: var(--hard-shadow-sm);
+  }
+  .artifact-tray-trigger span {
+    margin: 0;
+  }
+}
+.artifact-locate-notice {
+  position: absolute;
+  bottom: 12px;
+  right: 50px;
+  z-index: 6;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: var(--hard-shadow-sm);
+  margin: 0;
+}
+.artifact-locate-notice:empty {
+  display: none;
+}

@@ -691,6 +691,7 @@ export default function App() {
       onConversationScopeChange={handleConversationScopeChange}
       onConversationStatusChange={handleConversationStatus}
       onDeleteConversation={handleDeleteConversation}
+      loadedConversationId={convDetail?.conversation.id}
       displayMessages={displayMessages}
       hubSettings={hubSettings}
       onSaveSettings={handleSaveSettings}
