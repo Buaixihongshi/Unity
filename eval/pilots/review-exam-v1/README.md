@@ -17,7 +17,8 @@
   GitHub 和本机 Unity 服务（8000/8100/8200/8300）都会被拒绝。代理自己解析一次域名，
   任一结果不是公网地址（回环、私网、链路本地、映射到这些地址的 IPv6 形式）就拒绝，
   否则直接连检查过的那个 IP，不再二次解析（#96）。
-- 进程与环境：看不到其他进程；环境变量从零构造，`HOME`/`TMPDIR` 指向考场，不带令牌和 `YIREN_*`。
+- 进程与环境：`ps` 和 sysctl 进程表（`kern.proc.*`）都看不到其他进程；环境变量从零构造，`HOME`/`TMPDIR` 指向考场，不带令牌和 `YIREN_*`。
+- **未解决（#97）**：Seatbelt 不拦截同一用户的 `KERN_PROCARGS2`/`KERN_PROCARGS`，考生按 PID 仍能读到宿主同用户进程的命令行和环境（PID 可以穷举）。去掉 `system.sb`、全部拒绝 sysctl 和 process-info 也挡不住，跨用户读取则会被内核拒绝，所以要换成独立的考生用户运行。修好之前 `room_ready` 必然是 false。
 - 进考场前用 `scan_canaries` 扫一遍考场，修复提交号、修复标题等出现即视为泄题。
 
 ## 查考场
@@ -25,8 +26,8 @@
 `backend/app/evaluation/exam_probe.py` 是假考生，逐项尝试偷看：翻 Git 历史、搜修复标记、读和 stat 源仓库/答案表/
 记忆/会话记录/日常数据库、直连和经代理访问本机服务与 GitHub、调 `gh`、看进程、找令牌；
 查找剪贴板/钥匙串等宿主 Mach 服务，运行 `pbpaste`、`security list-keychains`、`defaults read -g`
-（只记退出码和字节数，不输出内容）。`probe` 命令还会在 `/private/var/tmp`、`/private/tmp` 和用户临时目录
-各放一个合成答案文件，结束后删除。
+（只记退出码和字节数，不输出内容）；读 sysctl 进程表，并按 PID 读一个合成宿主进程的参数和环境（只记是否命中合成标记）。`probe` 命令还会在 `/private/var/tmp`、`/private/tmp` 和用户临时目录
+各放一个合成答案文件，并在考场外启动一个参数和环境里带合成标记的同用户进程，结束后都会清理。
 同时有正向对照：必须能读 `repo/`、`pr.diff`，能在 `out/` 写文件，能 `git log`，能连上代理。
 同一考场再不加沙箱跑一遍作为对照，证明这些检查确实能发现泄漏。
 
@@ -55,6 +56,7 @@ python scripts/review_exam.py grade --sheet answer.txt --key key.json
 
 ## 还没做的
 
+- 考生改用独立用户运行（#97），需要所有者在本机建用户并配置 sudo 规则。
 - 真实 CLI 进考场：Claude/Codex 的启动参数、只读工具集、认证在沙箱内能否工作、代理白名单主机，
   都还没接，也没有用真实模型验证过。
 - 题目与答案表、分组跑批、汇总统计。

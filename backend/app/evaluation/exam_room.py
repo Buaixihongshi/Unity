@@ -14,14 +14,20 @@ that:
   allowlist CONNECT proxy (so a CLI can reach its model API, but nothing
   else: not GitHub, not the local Unity hub). The proxy only connects to
   public addresses it resolved and checked itself;
-- hides other processes;
+- hides other processes from ps and the sysctl process table;
 - starts from a scrubbed environment with HOME/TMPDIR inside the room.
+
+Known gap (#97): Seatbelt does not mediate KERN_PROCARGS2/KERN_PROCARGS, so a
+sandboxed process can still read the argv and environment of any process of the
+same user by PID (PIDs are cheap to brute-force). No profile rule closes this;
+only a different UID does. The probe checks it, so the room is not ready yet.
 
 The answer key never enters the room. Nothing here calls a model.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import ipaddress
 import os
@@ -106,7 +112,8 @@ def render_profile(room: Path, proxy_port: int, readable: Iterable[Path] = ()) -
         '(import "system.sb")',
         "(allow process-exec* process-fork)",
         "(allow signal (target self))",
-        "(allow sysctl-read)",
+        # system.sb allows every sysctl read; the process table (kern.proc.*) lists other PIDs and commands.
+        '(deny sysctl-read (sysctl-name-prefix "kern.proc"))',
         '(allow ipc-posix-shm (ipc-posix-name "apple.shm.notification_center"))',
         "(allow file-read-metadata " + " ".join(_literal(Path(item)) for item in ancestors) + ")",
         "(allow file-read* " + " ".join(_subpath(path) for path in [*map(Path, RUNTIME_READ), *allowed]) + ")",
@@ -279,6 +286,19 @@ def run_in_room(command: Sequence[str], room: Path, *, allowed_hosts: Iterable[s
                                        text=True, timeout=timeout)
         return {"returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr,
                 "proxy_attempts": list(proxy.attempts), "sandboxed": sandbox}
+
+
+@contextlib.contextmanager
+def synthetic_host_process(marker: str):
+    """A same-user process outside the room carrying ``marker`` in argv and env (probe runs only)."""
+    arg, env_value = f"EXAM_SYNTHETIC_ARG_{marker}", f"fixture_{marker}"
+    process = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()", arg],
+                               stdin=subprocess.PIPE, env={"EXAM_SYNTHETIC_ENV": env_value})
+    try:
+        yield {"pid": process.pid, "markers": [arg, env_value]}
+    finally:
+        process.kill()
+        process.wait(5)
 
 
 def copy_probe(room: Path) -> Path:

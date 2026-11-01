@@ -99,6 +99,9 @@ def test_profile_denies_by_default_and_opens_only_room_and_runtime(tmp_path):
     assert '(allow network-outbound (remote ip "localhost:4567"))' in profile
     # No Mach service beyond the system.sb baseline (pasteboard, keychain, ...).
     assert "mach-lookup" not in profile
+    # system.sb allows sysctl-read; the process table must be denied after it, and nothing re-allows it.
+    assert profile.index('(deny sysctl-read (sysctl-name-prefix "kern.proc"))') > profile.index('(import "system.sb")')
+    assert "(allow sysctl-read" not in profile
     reads = next(line for line in profile.splitlines() if line.startswith("(allow file-read* "))
     assert f'(subpath "{room.resolve()}")' in reads and "/private/var/tmp" not in reads
     assert '(subpath "/Users")' not in reads and '(subpath "/usr/local")' not in reads
@@ -234,18 +237,49 @@ def test_fake_examinee_is_blocked_in_room_but_leaks_without_sandbox(tmp_path):
     command = ["/usr/bin/python3", str(script), str(config)]
 
     try:
-        boxed = json.loads(exam_room.run_in_room(command, room, timeout=120)["stdout"])
-        control = json.loads(exam_room.run_in_room(command, room, sandbox=False, timeout=120)["stdout"])
+        with exam_room.synthetic_host_process("test") as fixture:
+            config.write_text(json.dumps({**json.loads(config.read_text()), "host_fixture": fixture}))
+            boxed = json.loads(exam_room.run_in_room(command, room, timeout=120)["stdout"])
+            control = json.loads(exam_room.run_in_room(command, room, sandbox=False, timeout=120)["stdout"])
     finally:
         hub.close()
         (var_tmp / "synthetic-answer.json").unlink()
         var_tmp.rmdir()
-    assert boxed["passed"], [item for item in boxed["checks"] if not item["ok"]]
+    # host_procargs is the open #97 gap, pinned by test_room_hides_host_process_args below.
+    assert [item for item in boxed["checks"] if not item["ok"]] == [
+        item for item in boxed["checks"] if item["id"] == "host_procargs"]
     leaked = {item["id"] for item in control["checks"] if not item["ok"]}
     # The same checks must see each leak without the sandbox, otherwise "blocked" proves nothing.
     assert {"read:answer_key", "stat:answer_key", "read:source_git", "list:answer_dir", "read:var_tmp",
             f"hub_direct:{hub_port}", "write_outside_room", "mach:com.apple.pasteboard.1",
-            "mach:com.apple.SecurityServer", "clipboard_pbpaste", "keychain_list", "host_preferences"} <= leaked
+            "mach:com.apple.SecurityServer", "clipboard_pbpaste", "keychain_list", "host_preferences",
+            "process_list_sysctl", "host_procargs"} <= leaked
+
+
+def _probe_procargs(room, fixture, *, sandbox):
+    script = exam_room.copy_probe(room)
+    config = script.parent / "procargs.json"
+    config.write_text(json.dumps({"host_fixture": fixture}))
+    report = json.loads(exam_room.run_in_room(["/usr/bin/python3", str(script), str(config)], room,
+                                              sandbox=sandbox, timeout=120)["stdout"])
+    return next(item for item in report["checks"] if item["id"] == "host_procargs")
+
+
+@pytest.mark.skipif(not exam_room.sandbox_available(), reason="needs macOS sandbox-exec")
+def test_host_process_args_leak_without_sandbox(tmp_path):
+    room = exam_room.build_room(_repo(tmp_path / "source"), "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
+    with exam_room.synthetic_host_process("ctl") as fixture:
+        check = _probe_procargs(room, fixture, sandbox=False)
+    assert check["observed"] == "allowed" and "markers_seen=[True, True]" in check["detail"]
+
+
+@pytest.mark.skipif(not exam_room.sandbox_available(), reason="needs macOS sandbox-exec")
+@pytest.mark.xfail(strict=True, reason="#97: Seatbelt does not mediate same-UID KERN_PROCARGS2; needs a separate UID")
+def test_room_hides_host_process_args(tmp_path):
+    room = exam_room.build_room(_repo(tmp_path / "source"), "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
+    with exam_room.synthetic_host_process("box") as fixture:
+        check = _probe_procargs(room, fixture, sandbox=True)
+    assert check["observed"] == "blocked", check["detail"]
 
 
 def test_canary_scan_finds_leaked_answer(tmp_path):

@@ -7,7 +7,8 @@ everything does not pass by accident). Prints one JSON report to stdout.
 
 Usage: python3 exam_probe.py CONFIG.json
 CONFIG keys: forbidden_files / forbidden_dirs ([label, path] pairs), hub_ports, canaries, internet_host,
-internet_ip, gh_repo, mach_services (defaults to HOST_SERVICES).
+internet_ip, gh_repo, mach_services (defaults to HOST_SERVICES), host_fixture ({pid, markers}: a synthetic
+same-user process started outside the room whose argv/env carry the markers).
 """
 from __future__ import annotations
 
@@ -83,6 +84,10 @@ def main() -> int:
 
     # Process and environment leaks.
     check("process_list", "process", "blocked", _other_processes)
+    check("process_list_sysctl", "process", "blocked", _sysctl_process_table)
+    fixture = config.get("host_fixture")
+    if fixture:
+        check("host_procargs", "process", "blocked", lambda: _procargs(int(fixture["pid"]), fixture["markers"]))
     check("token_env", "process", "blocked", _tokens)
 
     print(json.dumps({"passed": all(item["ok"] for item in results), "checks": results}, ensure_ascii=False, indent=2))
@@ -187,6 +192,30 @@ def _other_processes():
     own = {str(os.getpid()), str(os.getppid())}
     others = [line for line in completed.stdout.splitlines() if line.split(None, 1)[0] not in own]
     return ("allowed" if others else "blocked"), f"{len(others)} other processes visible"
+
+
+def _sysctl(mib):
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    name = (ctypes.c_int * len(mib))(*mib)
+    size = ctypes.c_size_t(0)
+    if libc.sysctl(name, len(mib), None, ctypes.byref(size), None, 0) != 0:
+        return ctypes.get_errno(), b""
+    buffer = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(name, len(mib), buffer, ctypes.byref(size), None, 0) != 0:
+        return ctypes.get_errno(), b""
+    return 0, buffer.raw[:size.value]
+
+
+def _sysctl_process_table():
+    errno, data = _sysctl([1, 14, 0])  # KERN_PROC_ALL: the PID table ps would print
+    return ("allowed" if not errno else "blocked"), f"errno={errno} size={len(data)}"
+
+
+def _procargs(pid: int, markers):
+    # KERN_PROCARGS2 returns another process's argv and environment; only hits are reported, never contents.
+    errno, data = _sysctl([1, 49, pid])
+    seen = [bool(marker) and marker.encode() in data for marker in markers]
+    return ("allowed" if any(seen) else "blocked"), f"errno={errno} size={len(data)} markers_seen={seen}"
 
 
 def _tokens():

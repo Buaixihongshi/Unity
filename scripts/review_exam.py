@@ -16,6 +16,7 @@ import argparse
 import contextlib
 import json
 import os
+import secrets
 import sys
 import tempfile
 from pathlib import Path
@@ -94,9 +95,10 @@ def probe(args) -> int:
     files, dirs, skipped = default_forbidden(source, answer_key, args.forbid)
     stack = contextlib.ExitStack()
     files += plant_synthetic(stack)
+    fixture = stack.enter_context(exam_room.synthetic_host_process(secrets.token_hex(4)))
     config = {"forbidden_files": files, "forbidden_dirs": dirs, "hub_ports": args.hub_ports,
               "canaries": args.canary, "internet_host": "github.com", "internet_ip": args.internet_ip,
-              "gh_repo": args.gh_repo, "room_sample": args.room_sample}
+              "gh_repo": args.gh_repo, "room_sample": args.room_sample, "host_fixture": fixture}
     report = {"model_calls": 0, "base": args.base, "head": args.head, "skipped_absent": skipped, "runs": {}}
     with stack, tempfile.TemporaryDirectory(prefix="review-exam-room-", dir="/private/tmp") as parent:
         room = exam_room.build_room(source, args.base, args.head, Path(parent) / "room",
