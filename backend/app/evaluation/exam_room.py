@@ -296,6 +296,41 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         writer.close()
 
 
+def _descendants(pid: int) -> list[int]:
+    """Every live descendant PID of ``pid`` (host view; the sandbox hides processes
+    from the examinee, not from us). Collected before anything is killed, so a child
+    that called ``setsid`` — leaving the examinee's process group — is still reached
+    by PID while its parent chain back to ``pid`` is intact (#101)."""
+    try:
+        output = subprocess.run(["ps", "-ax", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    seen: list[int] = []
+    stack = [pid]
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in seen and child != pid:
+                seen.append(child)
+                stack.append(child)
+    return seen
+
+
+def _terminate_tree(process: subprocess.Popen) -> None:
+    """Kill the examinee and every descendant, including any that escaped the process
+    group via ``setsid``. Snapshot the tree first, then SIGKILL the group and each PID."""
+    descendants = _descendants(process.pid)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    for pid in [process.pid, *descendants]:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+
+
 def run_in_room(command: Sequence[str], room: Path, *, allowed_hosts: Iterable[str] = (),
                 readable: Iterable[Path] = (), extra_path: Iterable[str] = (), extra_env: dict | None = None,
                 sandbox: bool = True, timeout: int = 600, stdin: str | None = None,
@@ -319,9 +354,18 @@ def run_in_room(command: Sequence[str], room: Path, *, allowed_hosts: Iterable[s
                 stdout, stderr = process.communicate(stdin, timeout=timeout)
                 timed_out = False
             except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                stdout, stderr = process.communicate()
+                _terminate_tree(process)
+                try:
+                    # Bounded: a setsid descendant we could not reach must not hold the pipes forever.
+                    stdout, stderr = process.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    for stream in (process.stdout, process.stderr):
+                        with contextlib.suppress(OSError):
+                            if stream is not None:
+                                stream.close()
+                    with contextlib.suppress(OSError):
+                        process.wait(timeout=10)
+                    stdout, stderr = "", ""
                 timed_out = True
         return {"returncode": process.returncode, "stdout": stdout, "stderr": stderr, "timed_out": timed_out,
                 "proxy_attempts": list(proxy.attempts), "sandboxed": sandbox}

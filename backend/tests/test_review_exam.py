@@ -339,3 +339,28 @@ def test_timeout_kills_the_whole_examinee_tree(tmp_path):
     assert result["timed_out"] is True
     with pytest.raises(ProcessLookupError):
         os.kill(child, 0)
+
+
+def test_timeout_reaches_a_child_that_escaped_the_group_with_setsid(tmp_path):
+    # #101: a descendant that calls setsid leaves the examinee's process group, so killpg alone
+    # misses it and the second communicate() would block on the pipes it still holds. The tree
+    # snapshot must reach it by PID, and run_in_room must return promptly either way.
+    room = tmp_path / "room"
+    (room / "out").mkdir(parents=True)
+    script = ("import os, sys, time\n"
+              "if os.fork() == 0:\n"
+              "    os.setsid()\n"
+              "    open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+              "    time.sleep(60)\n"
+              "else:\n"
+              "    time.sleep(60)\n")
+    start = time.monotonic()
+    result = exam_room.run_in_room(["/usr/bin/python3", "-c", script, "out/child"], room,
+                                   sandbox=False, timeout=2)
+    elapsed = time.monotonic() - start
+    child = int((room / "out/child").read_text())
+    time.sleep(0.2)
+    assert result["timed_out"] is True
+    assert elapsed < 30  # bounded: it did not wait out the 60s descendant
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)

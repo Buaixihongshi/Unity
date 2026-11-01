@@ -147,6 +147,20 @@ def scrub(text: str, secrets: Iterable[str]) -> str:
     return text
 
 
+def scrub_tree(value, secrets: Iterable[str]):
+    """Scrub every string reachable in the record, so no field leaks a credential
+    even if the examinee smuggles one into a place we did not anticipate (#100:
+    a token placed in a rejected CONNECT target still lands in ``proxy_attempts``)."""
+    secrets = list(secrets)
+    if isinstance(value, str):
+        return scrub(value, secrets)
+    if isinstance(value, dict):
+        return {key: scrub_tree(item, secrets) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [scrub_tree(item, secrets) for item in value]
+    return value
+
+
 def final_answer(provider: str, stdout: str) -> str:
     """The examinee's last message from the CLI's JSON event stream ("" if none)."""
     answer = ""
@@ -176,7 +190,7 @@ def sit_exam(examinee: Examinee, room: Path, *, task: str, auth: Mapping[str, st
                                    extra_path=install["extra_path"], extra_env={**room_settings(examinee, room), **auth},
                                    fake_ip=fake_ip, timeout=timeout)
     secrets = list(auth.values())
-    return {
+    record = {
         "role": examinee.role, "provider": examinee.provider, "model": examinee.model,
         "cli_config_digest": examinee.snapshot_digest, "returncode": result["returncode"],
         "timed_out": result["timed_out"], "answer": scrub(final_answer(examinee.provider, result["stdout"]), secrets),
@@ -185,3 +199,5 @@ def sit_exam(examinee: Examinee, room: Path, *, task: str, auth: Mapping[str, st
         "proxy_attempts": [{key: item.get(key) for key in ("target", "allowed")} for item in result["proxy_attempts"]],
         "auth_env": sorted(auth),
     }
+    # Final safety net: scrub every string in the record, so nothing textual escapes half-redacted.
+    return scrub_tree(record, secrets)

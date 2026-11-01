@@ -124,6 +124,28 @@ def test_sit_exam_opens_only_cli_paths_and_scrubs_credentials(tmp_path, monkeypa
     assert Path(env["CODEX_HOME"]).is_dir()
 
 
+def test_sit_exam_scrubs_credentials_smuggled_into_a_rejected_proxy_target(tmp_path, monkeypatch):
+    # #100: the examinee puts the token in a CONNECT host; the proxy rejects it, but the raw
+    # target is recorded in proxy_attempts and must not reach the report in the clear.
+    prefix = tmp_path / "node"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin/codex").write_text("#!/bin/sh\n")
+    (prefix / "bin/codex").chmod(0o755)
+    room = tmp_path / "room"
+    room.mkdir()
+    secret = "sk-secret-" + "7" * 40
+
+    def fake_run(argv, room_path, **kwargs):
+        return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False,
+                "proxy_attempts": [{"target": f"{secret}.api.openai.com:443", "allowed": False}]}
+    monkeypatch.setattr(exam_room, "run_in_room", fake_run)
+    examinee = exam_cli.examinee_from_snapshot(snapshot(), "baobao")
+    record = exam_cli.sit_exam(examinee, room, task="T", auth={"CODEX_API_KEY": secret}, path=str(prefix / "bin"))
+    assert secret not in json.dumps(record)
+    assert record["proxy_attempts"][0]["target"] == "[redacted].api.openai.com:443"
+    assert record["proxy_attempts"][0]["allowed"] is False
+
+
 def test_single_binary_cli_opens_only_its_resolved_executable(tmp_path):
     versions = tmp_path / "share/claude/versions"
     versions.mkdir(parents=True)
