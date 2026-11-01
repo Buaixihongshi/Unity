@@ -1,0 +1,149 @@
+import json
+import socket
+import subprocess
+import threading
+
+import pytest
+
+from backend.app.evaluation import exam_room
+from backend.app.evaluation.review_exam import SheetError, grade, judge_queue, load_key, parse_sheet
+
+KEY = load_key({"paper_id": "p1", "kind": "bug", "bugs": [
+    {"id": "b1", "file": "app/core.py", "line_start": 40, "line_end": 42, "description": "重启后锁未释放"},
+]})
+CLEAN = load_key({"paper_id": "p2", "kind": "clean", "bugs": []})
+
+
+def sheet(*findings, verdict="issues"):
+    return json.dumps({"verdict": verdict, "findings": [
+        {"file": f, "line_start": a, "line_end": b, "summary": "问题"} for f, a, b in findings]})
+
+
+def test_fenced_answer_is_read_but_two_blocks_are_rejected():
+    body = sheet(("app/core.py", 41, 41))
+    assert parse_sheet(f"说明文字\n```json\n{body}\n```\n").verdict == "issues"
+    with pytest.raises(SheetError, match="more than one"):
+        parse_sheet(f"```json\n{body}\n```\n```json\n{body}\n```")
+
+
+@pytest.mark.parametrize("raw", [
+    "没有问题",
+    json.dumps({"verdict": "no_issues", "findings": [{"file": "a.py", "line_start": 1, "line_end": 1, "summary": "x"}]}),
+    json.dumps({"verdict": "issues", "findings": []}),
+    json.dumps({"verdict": "maybe", "findings": []}),
+    json.dumps({"verdict": "no_issues", "findings": [], "notes": "extra"}),
+    sheet(("../etc/passwd", 1, 1)),
+    sheet(("/abs/core.py", 1, 1)),
+    sheet(("app/core.py", 5, 4)),
+    sheet(("app/core.py", 1, 400)),
+    json.dumps({"verdict": "issues", "findings": [{"file": "a.py", "line_start": True, "line_end": 1, "summary": "x"}]}),
+])
+def test_malformed_sheet_is_invalid_and_misses_every_bug(raw):
+    result = grade(raw, KEY)
+    assert not result.valid and result.error
+    assert result.missed == ["b1"] and not result.hits
+
+
+def test_location_window_hit_duplicate_and_false_positive():
+    result = grade(sheet(("app/core.py", 45, 47), ("./app/core.py", 40, 40), ("app/other.py", 41, 41),
+                         ("app/core.py", 80, 82)), KEY)
+    assert [hit["bug"] for hit in result.hits] == ["b1"]
+    assert [item["finding"] for item in result.duplicates] == [1]
+    assert [item["finding"] for item in result.false_positives] == [2, 3]
+    assert result.missed == []
+
+
+def test_finding_outside_tolerance_misses():
+    result = grade(sheet(("app/core.py", 48, 50)), KEY)
+    assert result.missed == ["b1"] and len(result.false_positives) == 1
+
+
+def test_clean_paper_counts_every_finding_as_false_positive():
+    assert grade(sheet(verdict="no_issues"), CLEAN).as_dict()["false_positives"] == []
+    assert len(grade(sheet(("a.py", 1, 2)), CLEAN).false_positives) == 1
+
+
+def test_key_rejects_bug_paper_without_bugs():
+    with pytest.raises(ValueError):
+        load_key({"paper_id": "x", "kind": "bug", "bugs": []})
+
+
+def test_judge_queue_hides_arm_and_keeps_mapping_separate():
+    hit = grade(sheet(("app/core.py", 41, 41)), KEY)
+    queue, mapping = judge_queue([("cross_vendor", hit, KEY)], seed=1)
+    assert "cross_vendor" not in json.dumps(queue, ensure_ascii=False)
+    assert mapping[queue[0]["id"]]["arm"] == "cross_vendor"
+
+
+def test_proxy_only_tunnels_allowlisted_hosts_on_443():
+    proxy = exam_room.AllowlistProxy(frozenset({"API.anthropic.com"}))
+    assert proxy.permits("api.anthropic.com", 443)
+    assert not proxy.permits("api.anthropic.com", 80)
+    assert not proxy.permits("github.com", 443)
+    assert not proxy.permits("127.0.0.1", 443)
+
+
+def test_profile_limits_network_to_proxy_port(tmp_path):
+    profile = exam_room.render_profile(tmp_path, 4567)
+    assert '(allow network-outbound (remote ip "localhost:4567"))' in profile
+    assert "(deny network-outbound)" in profile
+    assert '(deny file-write* (subpath "/"))' in profile
+
+
+def _repo(path):
+    path.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], cwd=path, check=True)
+    (path / "README.md").write_text("base\n")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=path, check=True)
+    (path / "app.py").write_text("print('pr')\n")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "pr"], cwd=path, check=True)
+    (path / "app.py").write_text("print('fixed')\n")
+    subprocess.run(["git", "commit", "-qam", "fix: SECRET-FIX-TITLE"], cwd=path, check=True)
+    return path
+
+
+def _accept_until_closed(server):
+    try:
+        while True:
+            server.accept()[0].close()
+    except OSError:
+        pass
+
+
+@pytest.mark.skipif(not exam_room.sandbox_available(), reason="needs macOS sandbox-exec")
+def test_fake_examinee_is_blocked_in_room_but_leaks_without_sandbox(tmp_path):
+    source = _repo(tmp_path / "source")
+    secret = tmp_path / "private" / "key.json"
+    secret.parent.mkdir()
+    secret.write_text("{}")
+    hub = socket.socket()
+    hub.bind(("127.0.0.1", 0))
+    hub.listen()
+    threading.Thread(target=_accept_until_closed, args=(hub,), daemon=True).start()
+    room = exam_room.build_room(source, "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
+    assert exam_room.scan_canaries(room, ["SECRET-FIX-TITLE"]) == []
+    script = exam_room.copy_probe(room)
+    config = script.parent / "config.json"
+    config.write_text(json.dumps({
+        "forbidden_files": [["answer_key", str(secret)], ["source_git", str(source / ".git/HEAD")]],
+        "forbidden_dirs": [["answer_dir", str(secret.parent)]],
+        "hub_ports": [hub.getsockname()[1]], "canaries": ["SECRET-FIX-TITLE"],
+    }))
+    command = ["/usr/bin/python3", str(script), str(config)]
+
+    boxed = json.loads(exam_room.run_in_room(command, room, timeout=120)["stdout"])
+    assert boxed["passed"], [item for item in boxed["checks"] if not item["ok"]]
+
+    control = json.loads(exam_room.run_in_room(command, room, sandbox=False, timeout=120)["stdout"])
+    leaked = {item["id"] for item in control["checks"] if not item["ok"]}
+    assert {"read:answer_key", "read:source_git", "list:answer_dir",
+            f"hub_direct:{hub.getsockname()[1]}", "write_outside_room"} <= leaked
+    hub.close()
+
+
+def test_canary_scan_finds_leaked_answer(tmp_path):
+    (tmp_path / "notes.txt").write_text("see fix abc123")
+    assert exam_room.scan_canaries(tmp_path, ["abc123"]) == [{"file": "notes.txt", "canary": "abc123"}]
