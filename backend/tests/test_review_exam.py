@@ -1,6 +1,7 @@
 import gc
 import json
 import logging
+import os
 import socket
 import subprocess
 import tempfile
@@ -153,6 +154,34 @@ def test_proxy_refuses_allowlisted_host_resolving_to_non_public_address(monkeypa
     assert opened == [] and proxy.attempts[0]["allowed"] is False
 
 
+@pytest.mark.parametrize("text", ["127.0.0.0/8", "10.0.0.0/8", "0.0.0.0/0", "198.16.0.0/14", "169.254.0.0/16",
+                                  "::ffff:198.18.0.0/111", "fd00::/8"])
+def test_fake_ip_ranges_outside_benchmark_block_are_refused(text):
+    with pytest.raises(ValueError):
+        exam_room.fake_ip_networks([text])
+
+
+@pytest.mark.parametrize("fake_ip, answer, allowed", [
+    ((), ["198.18.1.37"], False),                                 # #98: off by default
+    (("198.18.0.0/15",), ["198.18.1.37"], True),                  # fake-IP host
+    (("198.18.0.0/15",), ["198.18.1.37", "127.0.0.1"], False),    # loopback stays refused
+    (("198.18.0.0/16",), ["198.19.0.1"], False),                  # outside the trusted subnet
+])
+def test_proxy_trusts_fake_ip_answers_only_when_enabled(monkeypatch, fake_ip, answer, allowed):
+    opened = []
+
+    async def refuse_open(address, port):
+        opened.append(address)
+        raise OSError("fixture: no upstream")
+    monkeypatch.setattr(exam_room, "_open_upstream", refuse_open)
+    resolve, _ = _fake_resolver(answer)
+    with exam_room.AllowlistProxy(frozenset({"api.exam.invalid"}), resolve=resolve,
+                                  fake_ip=exam_room.fake_ip_networks(fake_ip)) as proxy:
+        _connect_status(proxy.port, "api.exam.invalid:443")
+    assert proxy.attempts[0]["allowed"] is allowed
+    assert opened == (answer[:1] if allowed else [])
+
+
 def test_proxy_connects_to_the_checked_address_without_resolving_again(monkeypatch):
     fixture = socket.socket()
     fixture.bind(("127.0.0.1", 0))
@@ -297,3 +326,16 @@ def test_room_tools_still_start_with_pidinfo_limited_to_self(tmp_path):
 def test_canary_scan_finds_leaked_answer(tmp_path):
     (tmp_path / "notes.txt").write_text("see fix abc123")
     assert exam_room.scan_canaries(tmp_path, ["abc123"]) == [{"file": "notes.txt", "canary": "abc123"}]
+
+
+def test_timeout_kills_the_whole_examinee_tree(tmp_path):
+    # A CLI launcher (node) runs the real examinee as a child; a timeout must not leave it running.
+    room = tmp_path / "room"
+    (room / "out").mkdir(parents=True)
+    result = exam_room.run_in_room(["/bin/sh", "-c", "sleep 60 & echo $! > out/child; wait"], room,
+                                   sandbox=False, timeout=2)
+    child = int((room / "out/child").read_text())
+    time.sleep(0.2)
+    assert result["timed_out"] is True
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)

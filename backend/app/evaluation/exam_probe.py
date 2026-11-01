@@ -81,6 +81,14 @@ def main() -> int:
     check("clipboard_pbpaste", "ipc", "blocked", lambda: _run(["/usr/bin/pbpaste"], cwd=room, show=False))
     check("keychain_list", "ipc", "blocked", lambda: _run(["/usr/bin/security", "list-keychains"], cwd=room, show=False))
     check("host_preferences", "ipc", "blocked", lambda: _run(["/usr/bin/defaults", "read", "-g"], cwd=room, show=False))
+    # system.sb keeps trustd and the opendirectoryd libinfo/membership services for libc and TLS. The full
+    # directory API, keychain certificates and admin trust settings behind them must stay out of reach.
+    check("directory_service_api", "ipc", "blocked",
+          lambda: _run(["/usr/bin/dscl", ".", "-list", "/Users"], cwd=room, show=False))
+    check("keychain_certificates", "ipc", "blocked",
+          lambda: _run(["/usr/bin/security", "find-certificate", "-a"], cwd=room, show=False))
+    check("trust_settings_admin", "ipc", "blocked",
+          lambda: _run(["/usr/bin/security", "dump-trust-settings", "-d"], cwd=room, show=False))
 
     # Process and environment leaks.
     check("process_list", "process", "blocked", _other_processes)

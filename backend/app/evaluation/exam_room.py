@@ -13,7 +13,8 @@ that:
 - denies all outbound network except one loopback port, served by an
   allowlist CONNECT proxy (so a CLI can reach its model API, but nothing
   else: not GitHub, not the local Unity hub). The proxy only connects to
-  public addresses it resolved and checked itself;
+  public addresses it resolved and checked itself (plus, when opted in, the
+  198.18.0.0/15 answers of a local fake-IP DNS);
 - hides other processes from ps and the sysctl process table, and limits
   process-info-pidinfo to the process itself, so argv and environment of other
   same-user processes (KERN_PROCARGS2 by PID) stay unreadable;
@@ -29,6 +30,7 @@ import io
 import ipaddress
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -45,6 +47,8 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 RUNTIME_READ = ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec", "/Library/Developer/CommandLineTools",
                 "/private/var/select", "/private/var/db/xcode_select_link")
 NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+# Benchmark range that fake-IP DNS proxies (Clash, Surge, ...) answer with for every public name.
+FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
 BASE_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin", "/usr/local/bin")
 
 
@@ -167,6 +171,26 @@ def public_address(text: str) -> bool:
     return address.is_global and not address.is_multicast
 
 
+def fake_ip_networks(ranges: Iterable[str]) -> tuple[ipaddress.IPv4Network, ...]:
+    """Parse opt-in fake-IP ranges; anything outside 198.18.0.0/15 is refused, so loopback,
+    private and link-local addresses can never be trusted this way."""
+    networks = []
+    for text in ranges:
+        network = ipaddress.ip_network(text, strict=True)
+        if not (isinstance(network, ipaddress.IPv4Network) and network.subnet_of(FAKE_IP_RANGE)):
+            raise ValueError(f"fake-IP range must lie inside {FAKE_IP_RANGE}: {text}")
+        networks.append(network)
+    return tuple(networks)
+
+
+def _in_networks(text: str, networks: Sequence[ipaddress.IPv4Network]) -> bool:
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return isinstance(address, ipaddress.IPv4Address) and any(address in network for network in networks)
+
+
 async def _system_resolve(host: str, port: int) -> list[str]:
     infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
     return [info[4][0] for info in infos]
@@ -183,12 +207,15 @@ class AllowlistProxy:
     The host is resolved once here; if any answer is not a public address the
     request is refused, otherwise the tunnel goes to the checked address itself
     (no second lookup, so DNS rebinding between check and connect does not apply).
+    ``fake_ip`` (see ``fake_ip_networks``) additionally trusts answers from a local
+    fake-IP DNS, whose TUN routes them to the requested name; off by default.
     """
 
     allowed_hosts: frozenset[str] = frozenset()
     attempts: list[dict] = field(default_factory=list)
     port: int = 0
     resolve: Callable[[str, int], Awaitable[list[str]]] = _system_resolve
+    fake_ip: tuple[ipaddress.IPv4Network, ...] = ()
 
     def __post_init__(self):
         self.allowed_hosts = frozenset(host.lower() for host in self.allowed_hosts)
@@ -241,7 +268,8 @@ class AllowlistProxy:
             if method == "CONNECT" and self.permits(host, port):
                 addresses = await asyncio.wait_for(self.resolve(host, port), 10)
                 attempt["resolved"] = addresses
-                attempt["allowed"] = bool(addresses) and all(public_address(item) for item in addresses)
+                attempt["allowed"] = bool(addresses) and all(
+                    public_address(item) or _in_networks(item, self.fake_ip) for item in addresses)
             if not attempt["allowed"]:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
@@ -270,12 +298,13 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
 
 def run_in_room(command: Sequence[str], room: Path, *, allowed_hosts: Iterable[str] = (),
                 readable: Iterable[Path] = (), extra_path: Iterable[str] = (), extra_env: dict | None = None,
-                sandbox: bool = True, timeout: int = 600, stdin: str | None = None) -> dict:
+                sandbox: bool = True, timeout: int = 600, stdin: str | None = None,
+                fake_ip: Iterable[str] = ()) -> dict:
     """Run ``command`` inside the room. ``sandbox=False`` is only for probe controls."""
     if sandbox and not sandbox_available():
         raise RuntimeError("sandbox-exec is unavailable; refusing to run an unsandboxed exam")
     room = Path(os.path.realpath(room))
-    with AllowlistProxy(frozenset(allowed_hosts)) as proxy:
+    with AllowlistProxy(frozenset(allowed_hosts), fake_ip=fake_ip_networks(fake_ip)) as proxy:
         env = room_env(room, proxy.port, extra_path, extra_env)
         argv = list(command)
         with tempfile.TemporaryDirectory(prefix="exam-profile-") as directory:
@@ -283,9 +312,18 @@ def run_in_room(command: Sequence[str], room: Path, *, allowed_hosts: Iterable[s
                 profile = Path(directory) / "room.sb"
                 profile.write_text(render_profile(room, proxy.port, readable))
                 argv = [SANDBOX_EXEC, "-f", str(profile), *argv]
-            completed = subprocess.run(argv, cwd=room, env=env, input=stdin, capture_output=True,
-                                       text=True, timeout=timeout)
-        return {"returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr,
+            # Own process group: on timeout the whole examinee tree is killed, not just its launcher.
+            process = subprocess.Popen(argv, cwd=room, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
+            try:
+                stdout, stderr = process.communicate(stdin, timeout=timeout)
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+                timed_out = True
+        return {"returncode": process.returncode, "stdout": stdout, "stderr": stderr, "timed_out": timed_out,
                 "proxy_attempts": list(proxy.attempts), "sandboxed": sandbox}
 
 
