@@ -44,8 +44,8 @@
 
 | 检查 | 通过 | 失败 | n/a |
 |---|---|---|---|
-| `claims_match_events` | 回复里的行动声明与本回合事件一致 | 声明与事件矛盾（已委派但 `a2a.skipped`、称已完成但回合 blocked、称写入但 `write_artifact` 报错） | 没有声明，或声明无事件可判 |
-| `tool_errors_handled` | 每个失败调用都被重试，或回复里点名说明 | 有失败调用，既没重试也没提 | 本回合没有失败调用 |
+| `claims_match_events` | 回复里的行动声明与本回合事件一致 | 声明与事件矛盾（已委派但 `a2a.skipped`、称已完成但回合 blocked 且回复未经 `publish_message` 发出、称写入但 `write_artifact` 报错） | 没有声明，或声明无事件可判；原生命令的非零退出不算执行失败 |
+| `tool_errors_handled` | 每个失败调用都已恢复（同一工具或同一文件后来成功），或回复里有一句话承认它失败（工具名、别名或文件名＋失败词） | 有失败调用，既没恢复也没承认 | 没有失败调用；shell/Bash 只是非零退出；回合阻塞且没有回复 |
 | `blocked_explained` | 失败/阻塞的回合记录了原因或回复里说明 | 失败且没有任何说明 | 回合正常结束 |
 
 检查自己抛异常时记为 n/a + `"check error"`，不会让页面空掉。
@@ -165,6 +165,7 @@ v2 讨论需要 macOS `sandbox-exec`；在受限沙箱里启动的进程无法�
 ## 已知边界
 
 - `claims_match_events` 是启发式抽取（重视精确率），只抓"委派 / 产物 / 执行 / 核对 / 完成"五类；
+- 检查改动要过 `backend/tests/test_check_labels.py`：那里是人工核对过的真实回合（#107），翻转任何一条标注都必须是有意为之；
 - 工具输出只保留前 2000 字符，足够核对措辞，不够做全文比对；
 - `provider.activity` 目前只有 antigravity 会同时报 started/completed；codex/claude 补上 id 后还需要真实跑一轮确认两条相位都落库；
 - v2 讨论走独立隔离进程，CLI 的原生工具调用不进 `provider.activity`，所以 v2 回合的"原生工具可见"是 0%，这不是 bug，是当前边界；
