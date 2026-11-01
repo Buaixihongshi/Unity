@@ -88,6 +88,8 @@ def main() -> int:
     fixture = config.get("host_fixture")
     if fixture:
         check("host_procargs", "process", "blocked", lambda: _procargs(int(fixture["pid"]), fixture["markers"]))
+        check("host_procargs_legacy", "process", "blocked",
+              lambda: _procargs(int(fixture["pid"]), fixture["markers"], kind=38))
     check("token_env", "process", "blocked", _tokens)
 
     print(json.dumps({"passed": all(item["ok"] for item in results), "checks": results}, ensure_ascii=False, indent=2))
@@ -211,9 +213,10 @@ def _sysctl_process_table():
     return ("allowed" if not errno else "blocked"), f"errno={errno} size={len(data)}"
 
 
-def _procargs(pid: int, markers):
-    # KERN_PROCARGS2 returns another process's argv and environment; only hits are reported, never contents.
-    errno, data = _sysctl([1, 49, pid])
+def _procargs(pid: int, markers, kind: int = 49):
+    # KERN_PROCARGS2 (49) / KERN_PROCARGS (38) return another process's argv and environment;
+    # only hits are reported, never contents.
+    errno, data = _sysctl([1, kind, pid])
     seen = [bool(marker) and marker.encode() in data for marker in markers]
     return ("allowed" if any(seen) else "blocked"), f"errno={errno} size={len(data)} markers_seen={seen}"
 

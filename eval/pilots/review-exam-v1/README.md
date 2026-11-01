@@ -17,8 +17,7 @@
   GitHub 和本机 Unity 服务（8000/8100/8200/8300）都会被拒绝。代理自己解析一次域名，
   任一结果不是公网地址（回环、私网、链路本地、映射到这些地址的 IPv6 形式）就拒绝，
   否则直接连检查过的那个 IP，不再二次解析（#96）。
-- 进程与环境：`ps` 和 sysctl 进程表（`kern.proc.*`）都看不到其他进程；环境变量从零构造，`HOME`/`TMPDIR` 指向考场，不带令牌和 `YIREN_*`。
-- **未解决（#97）**：Seatbelt 不拦截同一用户的 `KERN_PROCARGS2`/`KERN_PROCARGS`，考生按 PID 仍能读到宿主同用户进程的命令行和环境（PID 可以穷举）。去掉 `system.sb`、全部拒绝 sysctl 和 process-info 也挡不住，跨用户读取则会被内核拒绝，所以要换成独立的考生用户运行。修好之前 `room_ready` 必然是 false。
+- 进程与环境：`ps` 和 sysctl 进程表（`kern.proc.*`）都看不到其他进程；`process-info-pidinfo` 只允许查自己，按 PID 读其他同用户进程的命令行和环境（`KERN_PROCARGS2`/`KERN_PROCARGS`）会返回 EPERM（#97）。这条不能整项拒绝，否则 `python3`、`git` 启动即崩溃（-5）。环境变量从零构造，`HOME`/`TMPDIR` 指向考场，不带令牌和 `YIREN_*`。
 - 进考场前用 `scan_canaries` 扫一遍考场，修复提交号、修复标题等出现即视为泄题。
 
 ## 查考场
@@ -56,10 +55,10 @@ python scripts/review_exam.py grade --sheet answer.txt --key key.json
 
 ## 还没做的
 
-- 考生改用独立用户运行（#97），需要所有者在本机建用户并配置 sudo 规则。
 - 真实 CLI 进考场：Claude/Codex 的启动参数、只读工具集、认证在沙箱内能否工作、代理白名单主机，
   都还没接，也没有用真实模型验证过。
 - 题目与答案表、分组跑批、汇总统计。
 - 跨平台：Linux 上没有对应实现，测试会跳过沙箱用例。
 - 真实 CLI 需要的额外读取路径（如 Node 安装目录、证书）和 Mach 服务还没确定，接入时要逐项开放并重跑查考场。
+  若 CLI 需要查询自己子进程的信息，`process-info-pidinfo` 可考虑放宽到 `(target same-sandbox)`，但并发考场之间是否互相可见尚未验证。
 - 沙箱内调用 `/usr/bin/git`、`/usr/bin/python3` 会在 stderr 打印 xcrun 无法写缓存的提示，不影响结果。

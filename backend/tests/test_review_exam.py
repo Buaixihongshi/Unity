@@ -245,41 +245,53 @@ def test_fake_examinee_is_blocked_in_room_but_leaks_without_sandbox(tmp_path):
         hub.close()
         (var_tmp / "synthetic-answer.json").unlink()
         var_tmp.rmdir()
-    # host_procargs is the open #97 gap, pinned by test_room_hides_host_process_args below.
-    assert [item for item in boxed["checks"] if not item["ok"]] == [
-        item for item in boxed["checks"] if item["id"] == "host_procargs"]
+    assert boxed["passed"], [item for item in boxed["checks"] if not item["ok"]]
     leaked = {item["id"] for item in control["checks"] if not item["ok"]}
     # The same checks must see each leak without the sandbox, otherwise "blocked" proves nothing.
     assert {"read:answer_key", "stat:answer_key", "read:source_git", "list:answer_dir", "read:var_tmp",
             f"hub_direct:{hub_port}", "write_outside_room", "mach:com.apple.pasteboard.1",
             "mach:com.apple.SecurityServer", "clipboard_pbpaste", "keychain_list", "host_preferences",
-            "process_list_sysctl", "host_procargs"} <= leaked
+            "process_list_sysctl", "host_procargs", "host_procargs_legacy"} <= leaked
 
 
 def _probe_procargs(room, fixture, *, sandbox):
     script = exam_room.copy_probe(room)
     config = script.parent / "procargs.json"
     config.write_text(json.dumps({"host_fixture": fixture}))
-    report = json.loads(exam_room.run_in_room(["/usr/bin/python3", str(script), str(config)], room,
-                                              sandbox=sandbox, timeout=120)["stdout"])
-    return next(item for item in report["checks"] if item["id"] == "host_procargs")
+    result = exam_room.run_in_room(["/usr/bin/python3", str(script), str(config)], room, sandbox=sandbox, timeout=120)
+    # A crashed or garbled probe must fail here, not pass as "blocked".
+    assert result["returncode"] == 0, result["stderr"][-500:]
+    checks = {item["id"]: item for item in json.loads(result["stdout"])["checks"]}
+    return checks["host_procargs"], checks["host_procargs_legacy"]
 
 
 @pytest.mark.skipif(not exam_room.sandbox_available(), reason="needs macOS sandbox-exec")
 def test_host_process_args_leak_without_sandbox(tmp_path):
     room = exam_room.build_room(_repo(tmp_path / "source"), "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
     with exam_room.synthetic_host_process("ctl") as fixture:
-        check = _probe_procargs(room, fixture, sandbox=False)
-    assert check["observed"] == "allowed" and "markers_seen=[True, True]" in check["detail"]
+        checks = _probe_procargs(room, fixture, sandbox=False)
+    for check in checks:
+        assert check["observed"] == "allowed" and "markers_seen=[True, True]" in check["detail"], check
 
 
 @pytest.mark.skipif(not exam_room.sandbox_available(), reason="needs macOS sandbox-exec")
-@pytest.mark.xfail(strict=True, reason="#97: Seatbelt does not mediate same-UID KERN_PROCARGS2; needs a separate UID")
 def test_room_hides_host_process_args(tmp_path):
+    # #97: KERN_PROCARGS2/KERN_PROCARGS go through process-info-pidinfo, which the room limits to self.
     room = exam_room.build_room(_repo(tmp_path / "source"), "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
     with exam_room.synthetic_host_process("box") as fixture:
-        check = _probe_procargs(room, fixture, sandbox=True)
-    assert check["observed"] == "blocked", check["detail"]
+        checks = _probe_procargs(room, fixture, sandbox=True)
+    for check in checks:
+        assert check["observed"] == "blocked", check
+        assert "errno=1 size=0 markers_seen=[False, False]" in check["detail"], check
+
+
+@pytest.mark.skipif(not exam_room.sandbox_available(), reason="needs macOS sandbox-exec")
+def test_room_tools_still_start_with_pidinfo_limited_to_self(tmp_path):
+    # Denying process-info-pidinfo outright makes python3/git die at startup (-5); target self must keep them alive.
+    room = exam_room.build_room(_repo(tmp_path / "source"), "HEAD~2", "HEAD~1", tmp_path / "room", instructions="task")
+    script = "import subprocess; print(subprocess.run(['/usr/bin/git', '-C', 'repo', 'log', '--oneline'], capture_output=True).returncode)"
+    result = exam_room.run_in_room(["/usr/bin/python3", "-c", script], room, timeout=120)
+    assert (result["returncode"], result["stdout"].strip()) == (0, "0"), result["stderr"][-500:]
 
 
 def test_canary_scan_finds_leaked_answer(tmp_path):
