@@ -142,9 +142,13 @@ def build_router(
         payload: InterruptRequest,
         repo: Repository = Depends(get_repo),
     ):
-        if repo.get_mission(mission_id) is None:
+        mission = repo.get_mission(mission_id)
+        if mission is None:
             raise HTTPException(status_code=404, detail="Mission not found")
-        if not extension_points.any('mission_interrupt', repo, repo.get_mission(mission_id), payload):
+        if not extension_points.any('mission_interrupt', repo, mission, payload):
+            # A finished run never reads its queue again; the message would sit unanswered.
+            if mission.status not in {MissionStatus.PENDING, MissionStatus.RUNNING}:
+                raise HTTPException(status_code=409, detail="本轮已结束，请直接发送新消息")
             repo.add_interruption(mission_id, payload.content, payload.target_agent_id)
         return build_mission_detail(repo, settings, mission_id)
 

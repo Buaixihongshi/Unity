@@ -374,7 +374,7 @@ describe("Unity app", () => {
     expect(BACKEND_MISSION_STATUSES).toContain("pending");
   });
 
-  it("confirmed @mention in a running mission sends target_agent_id", async () => {
+  it("a running ordinary chat keeps the draft instead of sending a supplement", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", stubFetch((url, init) => {
       calls.push({ url, init });
@@ -387,36 +387,19 @@ describe("Unity app", () => {
           },
         })), { status: 200 });
       }
-      if (url === "/api/missions/m1/interruptions") {
-        return new Response(JSON.stringify({
-          mission: { id: "m1", goal: "先做规划", status: "running", created_at: "2026-05-05T00:00:00Z", updated_at: "2026-05-05T00:01:00Z" },
-          events: [],
-          artifacts: [],
-        }), { status: 200 });
-      }
       return null;
     }));
 
     render(<App />);
     await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByRole("button", { name: "发送补充" });
-    await waitFor(() =>
-      expect(screen.getByLabelText("消息输入")).toHaveValue(""),
-    );
-    await userEvent.type(screen.getByLabelText("消息输入"), "@王");
-    await userEvent.keyboard("{Tab}");
-    await flushRaf();
-    await userEvent.type(screen.getByLabelText("消息输入"), "看风险");
-    await userEvent.click(screen.getByRole("button", { name: "发送补充" }));
+    expect(await screen.findByRole("button", { name: "运行中…" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByLabelText("消息输入")).toHaveValue(""));
 
-    const interruptCall = calls.find(
-      (call) => call.url === "/api/missions/m1/interruptions",
-    );
-    expect(JSON.parse(String(interruptCall?.init?.body))).toEqual({
-      content: "@王也 看风险",
-      target_agent_id: "wangye",
-    });
+    await userEvent.type(screen.getByLabelText("消息输入"), "@冯宝宝 补一刀{Control>}{Enter}{/Control}");
+    expect(screen.getByLabelText("消息输入")).toHaveValue("@冯宝宝 补一刀");
+    expect(screen.getByRole("button", { name: "停止" })).toBeEnabled();
+    expect(calls.some(c => c.url.endsWith("/interruptions"))).toBe(false);
   });
 
   it("second idle submit calls conversation mission API, not legacy", async () => {
@@ -558,45 +541,6 @@ describe("Unity app", () => {
     });
   });
 
-  it("running submit with a typed @mention routes target_agent_id", async () => {
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    vi.stubGlobal("fetch", stubFetch((url, init) => {
-      calls.push({ url, init });
-      if (url.match(/\/api\/conversations\/[^/]+\/missions/) && init?.method === "POST") {
-        return new Response(JSON.stringify(makeConvDetail({
-          latest_mission_detail: {
-            mission: { id: "m1", goal: "先做规划", status: "running" as MissionStatus, created_at: "2026-05-05T00:00:00Z", updated_at: "2026-05-05T00:00:00Z" },
-            events: [],
-            artifacts: [],
-          },
-        })), { status: 200 });
-      }
-      if (url === "/api/missions/m1/interruptions") {
-        return new Response(JSON.stringify({
-          mission: { id: "m1", goal: "先做规划", status: "running", created_at: "2026-05-05T00:00:00Z", updated_at: "2026-05-05T00:01:00Z" },
-          events: [],
-          artifacts: [],
-        }), { status: 200 });
-      }
-      return null;
-    }));
-
-    render(<App />);
-    await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
-    await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByRole("button", { name: "发送补充" });
-    await waitFor(() => expect(screen.getByLabelText("消息输入")).toHaveValue(""));
-
-    await userEvent.type(screen.getByLabelText("消息输入"), "@冯宝宝 补一刀");
-    await userEvent.click(screen.getByRole("button", { name: "发送补充" }));
-
-    const interruptCall = calls.find(c => c.url === "/api/missions/m1/interruptions");
-    expect(JSON.parse(String(interruptCall?.init?.body))).toEqual({
-      content: "@冯宝宝 补一刀",
-      target_agent_id: "baobao",
-    });
-  });
-
   it.each([
     { draft: "", revise: true }, { draft: "尚未发送的补充", revise: true },
     { draft: "", revise: false }, { draft: "尚未发送的补充", revise: false },
@@ -723,7 +667,7 @@ describe("Unity app", () => {
     render(<App />);
     await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByRole("button", { name: "发送补充" });
+    await screen.findByRole("button", { name: "运行中…" });
 
     const EventSourceMock = window.EventSource as unknown as {
       instances: Array<EventTarget & { close: ReturnType<typeof vi.fn> }>;
