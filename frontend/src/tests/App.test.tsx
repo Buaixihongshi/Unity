@@ -400,7 +400,7 @@ describe("Unity app", () => {
     render(<App />);
     await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByRole("button", { name: "发送插话" });
+    await screen.findByRole("button", { name: "发送补充" });
     await waitFor(() =>
       expect(screen.getByLabelText("消息输入")).toHaveValue(""),
     );
@@ -408,7 +408,7 @@ describe("Unity app", () => {
     await userEvent.keyboard("{Tab}");
     await flushRaf();
     await userEvent.type(screen.getByLabelText("消息输入"), "看风险");
-    await userEvent.click(screen.getByRole("button", { name: "发送插话" }));
+    await userEvent.click(screen.getByRole("button", { name: "发送补充" }));
 
     const interruptCall = calls.find(
       (call) => call.url === "/api/missions/m1/interruptions",
@@ -584,11 +584,11 @@ describe("Unity app", () => {
     render(<App />);
     await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByRole("button", { name: "发送插话" });
+    await screen.findByRole("button", { name: "发送补充" });
     await waitFor(() => expect(screen.getByLabelText("消息输入")).toHaveValue(""));
 
     await userEvent.type(screen.getByLabelText("消息输入"), "@冯宝宝 补一刀");
-    await userEvent.click(screen.getByRole("button", { name: "发送插话" }));
+    await userEvent.click(screen.getByRole("button", { name: "发送补充" }));
 
     const interruptCall = calls.find(c => c.url === "/api/missions/m1/interruptions");
     expect(JSON.parse(String(interruptCall?.init?.body))).toEqual({
@@ -597,7 +597,10 @@ describe("Unity app", () => {
     });
   });
 
-  it("pauses a running chat, then resends the rewritten last message as a revision", async () => {
+  it.each([
+    { draft: "", revise: true }, { draft: "尚未发送的补充", revise: true },
+    { draft: "", revise: false }, { draft: "尚未发送的补充", revise: false },
+  ])("stopping preserves draft '$draft'; revision is explicit: $revise", async ({ draft, revise }) => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const at = "2026-05-05T00:00:00Z";
     const userMessage = { id: "msg_u1", mission_id: "m1", event_type: "message", role: "user" as const, content: "先做规划", created_at: at };
@@ -633,16 +636,31 @@ describe("Unity app", () => {
     render(<App />);
     await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await userEvent.click(await screen.findByRole("button", { name: "暂停" }));
+    await screen.findByRole("button", { name: "停止" });
+    if (draft) await userEvent.type(screen.getByLabelText("消息输入"), draft);
+    await userEvent.click(screen.getByRole("button", { name: "停止" }));
+    await screen.findByRole("button", { name: "编辑上一条消息" });
+    expect(screen.getByLabelText("消息输入")).toHaveValue(draft);
+    expect(screen.queryByRole("button", { name: "取消修改" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新发送" })).not.toBeInTheDocument();
 
-    await screen.findByRole("button", { name: "取消修改" });
-    expect(screen.getByLabelText("消息输入")).toHaveValue("先做规划");
-    await userEvent.clear(screen.getByLabelText("消息输入"));
-    await userEvent.type(screen.getByLabelText("消息输入"), "改成先做调研");
-    await userEvent.click(screen.getByRole("button", { name: "重新发送" }));
-
+    if (revise) {
+      await userEvent.click(screen.getByRole("button", { name: "编辑上一条消息" }));
+      expect(screen.getByLabelText("消息输入")).toHaveValue("先做规划");
+      await userEvent.click(screen.getByRole("button", { name: "取消修改" }));
+      expect(screen.getByLabelText("消息输入")).toHaveValue(draft);
+      await userEvent.click(screen.getByRole("button", { name: "编辑上一条消息" }));
+      await userEvent.clear(screen.getByLabelText("消息输入"));
+      await userEvent.type(screen.getByLabelText("消息输入"), "改成先做调研");
+      await userEvent.click(screen.getByRole("button", { name: "重新发送" }));
+    } else {
+      if (!draft) await userEvent.type(screen.getByLabelText("消息输入"), "继续");
+      await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    }
     const posts = calls.filter(c => c.url.match(/\/api\/conversations\/[^/]+\/missions/) && c.init?.method === "POST");
-    expect(JSON.parse(String(posts[1]?.init?.body))).toEqual({ goal: "改成先做调研", revises_message_id: "msg_u1" });
+    expect(JSON.parse(String(posts[1]?.init?.body))).toEqual(revise
+      ? { goal: "改成先做调研", revises_message_id: "msg_u1" }
+      : { goal: draft || "继续" });
     await waitFor(() => expect(screen.queryByRole("button", { name: "取消修改" })).not.toBeInTheDocument());
   });
 
@@ -705,7 +723,7 @@ describe("Unity app", () => {
     render(<App />);
     await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByRole("button", { name: "发送插话" });
+    await screen.findByRole("button", { name: "发送补充" });
 
     const EventSourceMock = window.EventSource as unknown as {
       instances: Array<EventTarget & { close: ReturnType<typeof vi.fn> }>;

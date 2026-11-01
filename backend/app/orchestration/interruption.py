@@ -31,8 +31,8 @@ PAUSE_EVENT = "mission.pause_requested"
 PLANNED_EVENT = "orchestration.planned"
 STEP_EVENT = "orchestration.step"
 
-REASON_LABELS = {"service_restart": "服务重启", "user_pause": "用户暂停"}
-STOPPED_SUMMARY = "用户暂停，本回合已中止"
+REASON_LABELS = {"service_restart": "服务重启", "user_pause": "用户停止"}
+STOPPED_SUMMARY = "用户停止，本回合已中止"
 # Enough of an interrupted reply for the next turn to pick up from.
 MAX_PARTIAL_CHARS = 1500
 

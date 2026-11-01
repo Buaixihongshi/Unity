@@ -57,7 +57,7 @@ def handover_note(repository: Repository, mission: Mission, registry) -> str:
         (e.payload for e in reversed(repository.list_events_after(previous_id, 0))
          if e.event_type == INTERRUPTED_EVENT), None)
     lines = [
-        "【交接：用户暂停后修改了上一条发言】",
+        "【交接：用户修改了上一条发言】",
         "原话：" + _quote(revision.get("original_content", "")),
         "改为：" + _quote(mission.goal),
         "修改前已回应：" + "、".join(replied) if replied else "修改前还没有人回应。",

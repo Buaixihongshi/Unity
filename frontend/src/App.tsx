@@ -61,9 +61,10 @@ export default function App() {
   const [latestMissionDetail, setLatestMissionDetail] = useState<MissionDetail | undefined>();
   const [input, setInput] = useState("");
   const [confirmations, setConfirmations] = useState<ConfirmedMention[]>([]);
-  /** The last user message being rewritten after a pause, if any. */
+  /** The last user message explicitly selected for editing, if any. */
   const [revisingMessageId, setRevisingMessageId] = useState<string | null>(null);
-  const [pausing, setPausing] = useState(false);
+  const draftBeforeRevision = useRef<{ input: string; confirmations: ConfirmedMention[] } | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [discussionBusy, setDiscussionBusy] = useState(false);
@@ -240,6 +241,11 @@ export default function App() {
     () => buildConversationTimeline(convDetail, latestMissionDetail),
     [convDetail, latestMissionDetail],
   );
+  const lastUserMessage = [...displayMessages].reverse().find((message) => message.role === "user");
+  const editableMessage = !hasRunningMission && !latestMissionDetail?.discussion
+    && !convDetail?.has_autonomous_work && conversationScope !== "archived"
+    && lastUserMessage && !lastUserMessage.metadata?.revised ? lastUserMessage : undefined;
+
   const quietDiscussion = latestMissionDetail?.discussion?.protocol === 'deliberation_v2';
 
   const turns = useMemo(
@@ -513,10 +519,10 @@ export default function App() {
     }
   }
 
-  async function handlePause() {
+  async function handleStop() {
     const mission = latestMissionDetail;
     if (!mission) return;
-    setPausing(true);
+    setStopping(true);
     setError(null);
     try {
       let detail = await pauseMission(mission.mission.id);
@@ -527,23 +533,14 @@ export default function App() {
       }
       setLatestMissionDetail(detail);
       if (!isTerminalMissionStatus(detail.mission.status)) {
-        setError("已请求暂停，当前回合还在结束中，请稍后再修改。");
+        setError("已请求停止，当前运行还在结束中，请稍候。");
         return;
-      }
-      const original = [...(detail.messages ?? [])].reverse().find((message) => message.role === "user");
-      if (original) {
-        setRevisingMessageId(String(original.id));
-        // Keep a draft the user already typed; otherwise start from the old wording.
-        if (!input.trim()) {
-          setInput(original.content);
-          setConfirmations([]);
-        }
       }
       await refreshConversationState();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "暂停失败");
+      setError(err instanceof Error ? err.message : "停止失败");
     } finally {
-      setPausing(false);
+      setStopping(false);
     }
   }
 
@@ -708,13 +705,22 @@ export default function App() {
         void sendDiscussionControlRequest("stop");
       }}
       onContinueDiscussion={handleContinueDiscussion}
-      onPause={() => { void handlePause(); }}
-      pausing={pausing}
+      onEditMessage={editableMessage ? () => {
+        if (!revisingMessageId) draftBeforeRevision.current = { input, confirmations };
+        setRevisingMessageId(String(editableMessage.id));
+        setInput(editableMessage.content);
+        setConfirmations([]);
+        setError(null);
+      } : undefined}
+      editableMessageId={editableMessage ? String(editableMessage.id) : undefined}
+      onStop={() => { void handleStop(); }}
+      stopping={stopping}
       revising={Boolean(revisingMessageId) && !hasRunningMission}
       onCancelRevise={() => {
         setRevisingMessageId(null);
-        setInput("");
-        setConfirmations([]);
+        setInput(draftBeforeRevision.current?.input ?? "");
+        setConfirmations(draftBeforeRevision.current?.confirmations ?? []);
+        draftBeforeRevision.current = null;
       }}
       onboarding={{
         health,

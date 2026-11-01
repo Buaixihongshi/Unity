@@ -50,7 +50,7 @@ export interface MissionCreatePayload {
   discussion?: { participant_ids: string[]; max_turns?: number; protocol?: "roundtable_v1" | "deliberation_v2"; max_exchange_rounds?: number };
   request_id?: string;
   work_mode?: 'document' | 'development' | 'online';
-  /** Rewrites the conversation's last user message after a pause. */
+  /** Explicitly rewrites the conversation's last user message. */
   revises_message_id?: string;
 }
 
@@ -109,7 +109,7 @@ export async function interruptMission(
 /** Stop the running chat now: the current turn ends and nobody else is scheduled. */
 export async function pauseMission(missionId: string): Promise<MissionDetail> {
   const response = await fetch(`${API_ROOT}/api/missions/${missionId}/pause`, { method: "POST" });
-  return parseJson<MissionDetail>(response, "暂停失败");
+  return parseJson<MissionDetail>(response, "停止失败");
 }
 
 export async function sendDiscussionControl(

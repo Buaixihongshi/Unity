@@ -70,9 +70,9 @@ export function MissionComposer(props: {
   interruptTargets?: ComposerInterruptTarget[];
   interruptTargetId?: string | null;
   onInterruptTargetChange?: (agentId: string | null) => void;
-  /** Offered while an ordinary chat runs: stop now to rewrite the last message. */
-  onPause?: () => void;
-  pausing?: boolean;
+  /** Stop the current run; editing an earlier message is a separate action. */
+  onStop?: () => void;
+  stopping?: boolean;
   /** Set while the input rewrites the last user message. */
   revising?: boolean;
   onCancelRevise?: () => void;
@@ -92,6 +92,10 @@ export function MissionComposer(props: {
   useEffect(() => {
     if (!menu) setHighlighted(0);
   }, [menu]);
+
+  useEffect(() => {
+    if (props.revising) textareaRef.current?.focus();
+  }, [props.revising]);
 
   function handleChange(newValue: string) {
     props.onChange(newValue);
@@ -217,12 +221,12 @@ export function MissionComposer(props: {
           </select>
         </div>
       ) : null}
-      {props.onPause ? (
+      {props.onStop ? (
         <div className="composer-notice">
-          <span>{props.pausing ? "正在暂停，当前回合结束后可以修改上一条发言…" : "想改刚才说的话？暂停后可以修改再发。"}</span>
-          <button type="button" className="composer-notice-action" onClick={props.onPause}
-            disabled={props.pausing || props.busy}>
-            {props.pausing ? "暂停中…" : "暂停"}
+          <span>{props.stopping ? "正在停止当前运行…" : "补充消息将在当前回合结束后处理。"}</span>
+          <button type="button" className="composer-notice-action" onClick={props.onStop}
+            disabled={props.disabled || props.stopping || props.busy}>
+            {props.stopping ? "停止中…" : "停止"}
           </button>
         </div>
       ) : props.revising ? (

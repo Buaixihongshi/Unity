@@ -62,7 +62,7 @@ def test_pause_stops_the_running_turn_and_frees_the_conversation(temp_settings):
         detail = _start_paused_chat(client, adapter)
     assert [agent for agent, _ in adapter.prompts] == ["baobao", "chulan"]
     assert [f["content"] for f in detail["failure_events"]] == [
-        "张楚岚本轮因用户暂停中断，未发布回复。原计划尚未发言：王也。可以直接发消息继续。"
+        "张楚岚本轮因用户停止中断，未发布回复。原计划尚未发言：王也。可以直接发消息继续。"
     ]
     assert [m["content"] for m in detail["messages"] if m["role"] == "agent"] == ["宝宝的看法"]
 
@@ -81,7 +81,7 @@ def test_revised_message_supersedes_the_old_one_and_hands_over(temp_settings, re
 
     agent, prompt = adapter.prompts[2]
     assert agent == "baobao"  # unaddressed: the last agent who actually published continues
-    for expected in ("【交接：用户暂停后修改了上一条发言】", "原话：周末去爬山", "改为：周末改去露营",
+    for expected in ("【交接：用户修改了上一条发言】", "原话：周末去爬山", "改为：周末改去露营",
                      "修改前已回应：冯宝宝", "被中止的回合：张楚岚，中止时已输出：「楚岚说到一半」",
                      "原计划尚未发言：王也", "不要沿用已作废的前提"):
         assert expected in prompt

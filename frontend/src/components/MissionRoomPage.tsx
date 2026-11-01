@@ -71,9 +71,11 @@ export function MissionRoomPage(props: {
   onRequestStop: () => void;
   onContinueDiscussion: () => void;
   onWorkUpdate?: () => void;
-  /** Pause an ordinary running chat so the user can rewrite the last message. */
-  onPause?: () => void;
-  pausing?: boolean;
+  /** Stop an ordinary running chat without changing the input. */
+  onStop?: () => void;
+  editableMessageId?: string;
+  onEditMessage?: () => void;
+  stopping?: boolean;
   revising?: boolean;
   onCancelRevise?: () => void;
 }) {
@@ -116,7 +118,7 @@ export function MissionRoomPage(props: {
   );
   const discussion = props.detail?.discussion ?? null;
   const submitLabel = hasActiveMission
-    ? "发送插话"
+    ? (discussion ? "发送插话" : "发送补充")
     : "发送";
   const onboardingCard = props.onboarding && showOnboarding && !(discussion?.protocol === 'deliberation_v2' && props.turns.length > 0) ? (
     <OnboardingCard
@@ -129,6 +131,7 @@ export function MissionRoomPage(props: {
   ) : null;
   const timeline = <TurnTimeline turns={props.turns} conversationId={props.selectedConversationId}
     contentRevision={discussion?.revision}
+    editableMessageId={props.editableMessageId} onEditMessage={props.onEditMessage}
     emptyContent={discussion?.protocol === "deliberation_v2" ? <DiscussionHighlights discussion={discussion} goal={props.detail?.mission.goal ?? ""} /> : onboardingCard}
     afterContent={<>
       {props.turns.length > 0 && onboardingCard}
@@ -141,11 +144,11 @@ export function MissionRoomPage(props: {
   const composer = <div className="discussion-panels composer-layout-compact">
     {discussionPanel && <div className="composer-discussion-status">{discussionPanel}</div>}
     <MissionComposer value={props.input} busy={props.busy} hasActiveMission={hasActiveMission}
-      disabled={props.conversationScope === "archived"} submitLabel={submitLabel}
+      disabled={props.conversationScope === "archived"} submitLabel={submitLabel} submitDisabled={props.stopping}
       mentionsEnabled={!(hasActiveMission && discussion)} skillsEnabled={props.discussionEnabled ?? false}
       onChange={props.onInputChange}
       confirmations={props.confirmations} onConfirmationsChange={props.onConfirmationsChange} onSubmit={props.onSubmit}
-      onPause={hasActiveMission && !discussion ? props.onPause : undefined} pausing={props.pausing}
+      onStop={hasActiveMission && !discussion ? props.onStop : undefined} stopping={props.stopping}
       revising={props.revising} onCancelRevise={props.onCancelRevise}
       />
   </div>;

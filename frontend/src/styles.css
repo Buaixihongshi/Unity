@@ -1558,7 +1558,7 @@ summary:focus-visible {
   font-weight: 500;
 }
 
-.mission-composer button {
+.mission-composer .composer-send {
   position: absolute;
   bottom: 12px;
   right: 12px;
@@ -1575,16 +1575,16 @@ summary:focus-visible {
   transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.15s ease;
 }
 
-.mission-composer button:hover:not(:disabled) {
+.mission-composer .composer-send:hover:not(:disabled) {
   background: var(--sage-strong);
 }
 
-.mission-composer button:active:not(:disabled) {
+.mission-composer .composer-send:active:not(:disabled) {
   transform: translate(2px, 2px);
   box-shadow: 0 0 0 var(--ink);
 }
 
-.mission-composer button:disabled {
+.mission-composer .composer-send:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -3616,7 +3616,7 @@ summary:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .mission-composer button {
+  .mission-composer .composer-send {
     position: static;
     width: 100%;
     min-height: 44px;
@@ -4911,11 +4911,11 @@ summary:focus-visible {
   }
 }
 
-/* Pause a running chat, then rewrite the last message. */
-.composer-notice { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border-bottom:1px solid var(--ink-line); font-size:.8rem; color:var(--ink-soft); }
+/* Stopping and editing are independent composer actions. */
+.composer-notice { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border-bottom:1px solid var(--ink-line); font-size:.8rem; color:var(--ink-muted); }
 .composer-notice > span { min-width:0; overflow-wrap:anywhere; }
 .composer-notice-revising { background:var(--sage-soft); }
-.composer-notice-action { flex:none; padding:4px 12px; border:1px solid var(--ink-line); border-radius:5px; background:transparent; font-size:.8rem; cursor:pointer; }
+.composer-notice-action { position:static; min-height:34px; color:var(--ink); flex:none; padding:4px 12px; border:1px solid var(--ink-line); border-radius:5px; background:transparent; font-size:.8rem; cursor:pointer; }
 .composer-notice-action:disabled { opacity:.6; cursor:default; }
 .bubble-revised { margin-left:8px; padding:1px 6px; border:1px solid currentColor; border-radius:4px; font-size:.68rem; letter-spacing:0; opacity:.8; }
 
@@ -4936,3 +4936,7 @@ summary:focus-visible {
   min-height: 0;
   object-fit: cover;
 }
+
+.composer-notice-action:hover:not(:disabled), .bubble-edit:hover { background:var(--sage-soft); }
+.bubble-edit { display:flex; align-items:center; justify-content:center; width:28px; height:28px; margin:8px 0 0 auto; padding:0; border:0; border-radius:4px; background:transparent; color:var(--ink-muted); cursor:pointer; }
+.bubble-edit:hover, .bubble-edit:focus-visible { color:var(--ink); }

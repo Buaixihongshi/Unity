@@ -191,6 +191,23 @@ describe("MissionComposer mention autocomplete", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("stops independently of sending and explains when a supplement takes effect", async () => {
+    const onStop = vi.fn(), onSubmit = vi.fn();
+    const props = { value: "补充信息", busy: false, hasActiveMission: true,
+      onChange: vi.fn(), onSubmit, onStop, submitLabel: "发送补充" };
+    const { rerender } = render(<MissionComposer {...props} />);
+    expect(screen.getByText("补充消息将在当前回合结束后处理。")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "停止" }));
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(<MissionComposer {...props} stopping submitDisabled />);
+    expect(screen.getByRole("button", { name: "停止中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送补充" })).toBeDisabled();
+    expect(screen.getByLabelText("消息输入")).not.toBeDisabled();
+    await userEvent.type(screen.getByLabelText("消息输入"), "{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("shows 发送插话 when has active mission", () => {
     render(<Harness initialValue="x" hasActiveMission />);
     expect(screen.getByRole("button", { name: "发送插话" })).toBeInTheDocument();

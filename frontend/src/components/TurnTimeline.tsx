@@ -31,6 +31,8 @@ export function TurnTimeline({
   afterContent,
   collapsedAgentMissionId,
   contentRevision,
+  editableMessageId,
+  onEditMessage,
 }: {
   turns: TurnView[];
   conversationId?: string;
@@ -38,6 +40,8 @@ export function TurnTimeline({
   afterContent?: ReactNode;
   collapsedAgentMissionId?: string;
   contentRevision?: number;
+  editableMessageId?: string;
+  onEditMessage?: () => void;
 }) {
   const containerRef = useRef<HTMLElement>(null);
   const lastConvRef = useRef<string | undefined>(undefined);
@@ -101,7 +105,7 @@ export function TurnTimeline({
           {turn.a2aInvocation ? <A2AArrow invocation={turn.a2aInvocation} /> : null}
           {turn.artifact ? (
             <ArtifactPanel key={turn.artifact.created_at} missionId={turn.artifact.mission_id} artifacts={[turn.artifact]} variant="chat" />
-          ) : turn.isStatusEvent ? <StatusBadge turn={turn} /> : <ChatBubble turn={turn} />}
+          ) : turn.isStatusEvent ? <StatusBadge turn={turn} /> : <ChatBubble turn={turn} onEdit={turn.id === editableMessageId ? onEditMessage : undefined} />}
         </Fragment>
       ))}
       {collapsed.length > 0 && <details className="deliberation-original-messages">
