@@ -73,6 +73,10 @@ def turn_cost(provider_id: str, usage: Optional[dict]) -> tuple[Optional[float],
     reported = usage.get("total_cost_usd")
     if isinstance(reported, (int, float)) and not isinstance(reported, bool):
         return round(float(reported), 6), SOURCE_PROVIDER
+    if total_tokens(usage) == 0:
+        # A usage record of all zeros means the provider reported nothing, not
+        # that the turn was free. Pricing it at $0 would count as "known".
+        return None, None
     estimated = estimate_cost(provider_id, usage)
     return estimated, (SOURCE_ESTIMATE if estimated is not None else None)
 

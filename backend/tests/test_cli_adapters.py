@@ -1409,10 +1409,11 @@ def testbuild_failure_summary_exit_code_with_stderr():
 
 
 def testbuild_failure_summary_exit_code_with_long_stderr():
-    long_err = "x" * 300
+    long_err = "x" * 300 + " fatal: the end"
     s = build_failure_summary("codex", exit_code=1, stderr_snippet=long_err)
     assert len(s) < 250
-    assert s.endswith("…")
+    assert s.endswith("fatal: the end")  # the cause is at the end, keep it
+    assert "…" in s
 
 
 def testbuild_failure_summary_os_error():

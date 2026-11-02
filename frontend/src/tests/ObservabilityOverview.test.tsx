@@ -126,6 +126,29 @@ describe("ObservabilityOverview", () => {
     expect(await screen.findByText(/a\.py/)).toBeInTheDocument();
   });
 
+  it("groups checks by layer and keeps environment failures off the agent", async () => {
+    const data = payload();
+    data.checks = [
+      { name: "turn_closed", layer: "trace", health: null, what: "有终态", pass: 300, fail: 2, na: 40, rate: 0.993 },
+      { name: "claims_match_events", layer: "agent", health: "31 次评判从未失败，可能没有判别力",
+        what: "声明不矛盾", pass: 31, fail: 0, na: 311, rate: 1 },
+    ];
+    data.by_agent = [{ agent: "chulan", turns: 160, tokens: 1, cost: 1, tools: 3, native: 0,
+      blocked: 1, blocked_environment: 4, blocked_user: 2 }];
+    data.failures = [{ check: "turn_closed", layer: "trace", note: "任务已 completed，回合却没有终态事件",
+      agent: "chulan", turn_id: "turn_3", mission: "任务", at: STAMP }];
+    mockedFetch.mockResolvedValue(data);
+    render(<ObservabilityOverview />);
+
+    const trace = await screen.findByRole("region", { name: "Trace 可信度" });
+    expect(within(trace).getByText("回合终态")).toBeInTheDocument();
+    const agent = screen.getByRole("region", { name: "Agent 行为" });
+    expect(within(agent).getByText("声明一致")).toBeInTheDocument();
+    expect(within(agent).getByText(/从未失败，可能没有判别力/)).toBeInTheDocument();
+    expect(screen.getByText("4/2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /trace\s*turn_closed · chulan/ })).toBeInTheDocument();
+  });
+
   it("requests the selected window", async () => {
     mockedFetch.mockResolvedValue(payload());
     render(<ObservabilityOverview />);
