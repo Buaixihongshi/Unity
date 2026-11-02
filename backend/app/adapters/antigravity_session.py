@@ -1,9 +1,11 @@
 """Bounded process reuse with per-turn MCP grants and durable reconciliation.
 
-One retained worker per backend process because agy uses a global MCP config.
-Switching conversation/persona evicts it; idle workers release config promptly.
-The pool never replays a request after stdin delivery: native side effects may
-have happened even when no activity event reached the host.
+One retained worker per conversation and persona. Each worker runs in its own
+workspace with its own MCP server, so workers for different conversations run
+concurrently; turns for the same key share one stdin stream and queue. The
+pool caps live workers and evicts idle ones first. It never replays a request
+after stdin delivery: native side effects may have happened even when no
+activity event reached the host.
 """
 import atexit
 from collections import deque
@@ -21,7 +23,7 @@ from uuid import uuid4
 
 from backend.app import extension_points
 from backend.app import host_rules
-from backend.app.adapters.antigravity_config import guarded_global_mcp_config
+from backend.app.adapters.antigravity_config import WaitCancelled, legacy_config_excluded, write_workspace_plugin
 from backend.app.adapters.base import TurnOutcome
 from backend.app.adapters.cli_diagnostics import write_cli_diagnostic
 from backend.app.adapters.mcp_subprocess import MCPSubprocessAdapter, _augment_prompt_for_mcp, _mcp_published_message, _max_event_id, _emit_turn_usage
@@ -58,14 +60,14 @@ def stream_args(args):
 
 
 class _Worker:
-    def __init__(self, adapter, key, ledger, timeout):
+    def __init__(self, adapter, key, ledger, timeout, *, cancelled=None, on_wait=None):
         self.adapter, self.key, self.ledger = adapter, key, ledger
         self.id = 'agy_' + uuid4().hex
         self.proc = None
         self.watchdog = None
         self.watchdog_fd = None
         self.tmp = None
-        self.guard = None
+        self.excluded = None
         self.events = queue.Queue(maxsize=512)
         self.stderr = deque(maxlen=50)
         self.readers = []
@@ -88,10 +90,11 @@ class _Worker:
                 'PYTHONPATH': os.pathsep.join(filter(None, [str(Path(__file__).resolve().parents[3]), os.environ.get('PYTHONPATH')])),
             }
             spec = {'command': adapter.mcp_python, 'args': ['-m', 'backend.app.mcp.session_server'], 'env': env}
-            self.guard = guarded_global_mcp_config(spec, lock_timeout=timeout)
-            self.guard.__enter__()
+            write_workspace_plugin(workspace, spec)
+            self.excluded = legacy_config_excluded(timeout, cancelled=cancelled, on_wait=on_wait)
+            self.excluded.__enter__()
             if time.monotonic() >= deadline:
-                raise TimeoutError('Antigravity initialization deadline exceeded waiting for configuration')
+                raise TimeoutError('Antigravity initialization deadline exceeded waiting for an older Unity instance')
             args = stream_args(adapter.args)
             if not any(arg == '--add-dir' or arg.startswith('--add-dir=') for arg in args):
                 args = ['--add-dir', os.getcwd(), *args]
@@ -227,9 +230,9 @@ class _Worker:
                 self.watchdog.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 self.watchdog.kill(); self.watchdog.wait(timeout=3)
-        if self.guard is not None:
-            self.guard.__exit__(None, None, None)
-            self.guard = None
+        if self.excluded is not None:
+            self.excluded.__exit__(None, None, None)
+            self.excluded = None
         if self.tmp is not None:
             self.tmp.cleanup()
         if retry_revoke:
@@ -252,30 +255,73 @@ class _Worker:
 
 
 class AntigravitySessionPool:
-    def __init__(self, *, idle_seconds=15, max_turns=12):
-        self.idle_seconds, self.max_turns = idle_seconds, max_turns
-        self.lock = threading.RLock()
-        self.worker = None
+    def __init__(self, *, idle_seconds=15, max_turns=12, max_workers=4):
+        self.idle_seconds, self.max_turns, self.max_workers = idle_seconds, max_turns, max_workers
+        self.lock = threading.Lock()  # guards the maps below, never held across a turn
+        self.workers = {}  # key -> retained _Worker
+        self.slots = {}    # key -> Lock held by the turn using that key
         self.stopped = threading.Event()
         threading.Thread(target=self._reap, daemon=True).start()
 
+    def _try_reserve(self, key):
+        """Take the key's slot if a worker may run for it; returns workers evicted to make room."""
+        with self.lock:
+            slot = self.slots.setdefault(key, threading.Lock())
+            if not slot.acquire(blocking=False):
+                return None
+            busy = {k for k, v in self.slots.items() if v.locked()}
+            if key in self.workers or len(busy | set(self.workers)) <= self.max_workers:
+                return []
+            for other, worker in sorted(self.workers.items(), key=lambda item: item[1].last_used):
+                # Hold the victim's slot until it is closed so no turn picks it up.
+                if other not in busy and self.slots[other].acquire(blocking=False):
+                    del self.workers[other]
+                    return [(other, worker)]
+            slot.release()
+            return None
+
+    def _release(self, key, slot=None):
+        with self.lock:
+            current = self.slots.get(key)
+            slot = slot or current
+            slot.release()
+            if slot is current and key not in self.workers:
+                del self.slots[key]
+
+    def _retire(self, victims, reason):
+        for key, worker in victims:
+            worker.close(reason)
+            self._release(key)
+
     def _reap(self):
         while not self.stopped.wait(min(1, max(0.02, self.idle_seconds / 2))):
-            # Never block an active turn; its deadline is supervised separately.
-            if not self.lock.acquire(blocking=False):
-                continue
-            try:
-                worker = self.worker
-                if worker and (not worker.alive() or time.monotonic()-worker.last_used >= self.idle_seconds):
-                    worker.close('idle_expired' if worker.alive() else 'process_lost')
-                    self.worker = None
-            finally:
-                self.lock.release()
+            victims = []
+            with self.lock:
+                for key, worker in list(self.workers.items()):
+                    # Never block an active turn; its deadline is supervised separately.
+                    if self.slots[key].acquire(blocking=False):
+                        if not worker.alive() or time.monotonic()-worker.last_used >= self.idle_seconds:
+                            del self.workers[key]
+                            victims.append((key, worker))
+                        else:
+                            self.slots[key].release()
+            for key, worker in victims:
+                worker.close('idle_expired' if worker.alive() else 'process_lost')
+                self._release(key)
 
     def close(self, database_path=None):
         with self.lock:
-            if self.worker and (database_path is None or str(Path(database_path).resolve()) == self.worker.key[0]):
-                self.worker.close('service_shutdown'); self.worker = None
+            keys = [key for key in self.workers
+                    if database_path is None or str(Path(database_path).resolve()) == key[0]]
+            slots = [(key, self.slots[key]) for key in keys]
+        for key, slot in slots:
+            slot.acquire()  # let a running turn finish first
+            with self.lock:
+                # A slot replaced meanwhile no longer guards this key's worker.
+                worker = self.workers.pop(key, None) if self.slots.get(key) is slot else None
+            if worker:
+                worker.close('service_shutdown')
+            self._release(key, slot)
 
     def stop(self):
         self.stopped.set(); self.close()
@@ -284,25 +330,45 @@ class AntigravitySessionPool:
         from backend.app.adapters.turn_deadline import ToolResultDeadline, is_hub_work_result, is_tool_return
         started = time.monotonic()
         timeout_code = 'hard_timeout'
+        repo = tools.repository
+        mission = repo.get_mission(mission_id)
+        key = (str(adapter.db_path), str(adapter.artifact_root), mission.conversation_id or mission_id,
+               agent_id, provider_id, adapter.command, tuple(adapter.args), os.getcwd(),
+               tuple(sorted(adapter.extra_env.items())))
+        # Surface the waiting bubble while queued and during cold initialization.
+        adapter.live_progress.mark_active(mission_id, turn_id)
+        wait_until = time.monotonic() + max(0, adapter.timeout)
+        queued = None
+        while (victims := self._try_reserve(key)) is None:
+            if queued is None:
+                queued = {'turn_id': turn_id, 'agent_id': agent_id, 'provider_id': provider_id,
+                          'activity_id': turn_id + ':queue', 'tool_name': 'worker_queue'}
+                repo.add_event(mission_id, 'provider.activity', {
+                    **queued, 'phase': 'started', 'summary': '排队等待 Antigravity：同一会话的上一轮未结束或并行会话已满'})
+            if interruption.pause_requested(mission_id):
+                repo.add_event(mission_id, 'provider.activity', {**queued, 'phase': 'failed', 'summary': '已停止排队'})
+                adapter.live_progress.clear(mission_id, turn_id)
+                return TurnOutcome(TurnStatus.BLOCKED, interruption.STOPPED_SUMMARY, failure_code='stopped', retryable=False)
+            if time.monotonic() >= wait_until:
+                repo.add_event(mission_id, 'provider.activity', {**queued, 'phase': 'failed', 'summary': '排队超时'})
+                adapter.live_progress.clear(mission_id, turn_id)
+                return TurnOutcome(TurnStatus.BLOCKED, '等待 Antigravity 工作进程超时（同一会话的上一轮未结束或并行会话已满）；本轮未发送。')
+            time.sleep(0.05)
+        if queued:
+            repo.add_event(mission_id, 'provider.activity', {**queued, 'phase': 'completed', 'summary': '排队结束'})
+        self._retire(victims, 'capacity_evicted')
+        # The turn budget starts once the worker is ours; queueing has its own limit.
         progress = ToolResultDeadline(adapter.timeout, check_interval=adapter.progress_check_interval)
-        if not self.lock.acquire(timeout=max(0, adapter.timeout)):
-            return TurnOutcome(TurnStatus.BLOCKED, '等待 Antigravity 工作进程超时；本轮未发送。')
         worker = None
         token = None
         initializing = False
         try:
-            # Surface the waiting bubble during cold initialization as well.
-            adapter.live_progress.mark_active(mission_id, turn_id)
-            repo = tools.repository
             ledger = ExecutionLedger(repo)
-            mission = repo.get_mission(mission_id)
-            key = (str(adapter.db_path), str(adapter.artifact_root), mission.conversation_id or mission_id,
-                   agent_id, provider_id, adapter.command, tuple(adapter.args), os.getcwd(),
-                   tuple(sorted(adapter.extra_env.items())))
-            worker = self.worker
-            if worker and (worker.key != key or not worker.alive() or worker.turns >= self.max_turns):
-                worker.close('scope_changed' if worker.key != key else 'worker_replaced')
-                self.worker = worker = None
+            worker = self.workers.get(key)
+            if worker and (not worker.alive() or worker.turns >= self.max_turns):
+                worker.close('worker_replaced')
+                self._forget(key)
+                worker = None
             if worker is None:
                 initializing = True
                 repo.add_event(mission_id, 'provider.activity', {
@@ -310,8 +376,15 @@ class AntigravitySessionPool:
                     'activity_id': turn_id + ':startup', 'tool_name': 'worker_startup',
                     'phase': 'started', 'summary': '启动 Antigravity 工作进程',
                 })
-                worker = _Worker(adapter, key, ledger, max(0.001, progress.remaining()))
-                self.worker = worker
+                def legacy_wait():
+                    repo.add_event(mission_id, 'provider.activity', {
+                        'turn_id': turn_id, 'agent_id': agent_id, 'provider_id': provider_id,
+                        'activity_id': turn_id + ':legacy', 'tool_name': 'worker_queue',
+                        'phase': 'started', 'summary': '等待旧版 Unity 实例结束 Antigravity 轮次'})
+                worker = _Worker(adapter, key, ledger, max(0.001, progress.remaining()),
+                                 cancelled=lambda: interruption.pause_requested(mission_id), on_wait=legacy_wait)
+                with self.lock:
+                    self.workers[key] = worker
                 repo.add_event(mission_id, 'provider.activity', {
                     'turn_id': turn_id, 'agent_id': agent_id, 'provider_id': provider_id,
                     'activity_id': turn_id + ':startup', 'tool_name': 'worker_startup',
@@ -328,6 +401,7 @@ class AntigravitySessionPool:
             instruction = (
                 '\n【本轮执行凭证】context_token=' + token + '\n'
                 + host_rules.CONTEXT_TOKEN.text + host_rules.OPERATION_ID.text + host_rules.HOST_OWNS_STATUS.text
+                + host_rules.AGY_SERVER_NAME.text
             )
             # Scope data comes from the host, never from previous model memory.
             instruction += '\n当前任务：' + mission_id + '；当前回合：' + turn_id + '。\n'
@@ -405,12 +479,12 @@ class AntigravitySessionPool:
                 step = event.get('step_update')
                 if event.get('event') == 'step_update' and isinstance(step, dict) and step.get('text_delta'):
                     last_activity = time.monotonic()
-        except TurnStopped as exc:
+        except (TurnStopped, WaitCancelled):
             # The user paused: stop the worker group now; a later turn starts a fresh one.
             if worker:
                 worker.close('user_stopped')
-            self.worker = None
-            return TurnOutcome(TurnStatus.BLOCKED, str(exc), failure_code='stopped', retryable=False)
+            self._forget(key)
+            return TurnOutcome(TurnStatus.BLOCKED, interruption.STOPPED_SUMMARY, failure_code='stopped', retryable=False)
         except Exception as exc:
             write_cli_diagnostic(
                 adapter.db_path.parent / 'cli-diagnostics',
@@ -433,7 +507,7 @@ class AntigravitySessionPool:
                 tools.repository, mission_id, turn_id, cursor, receipt, agent_id, provider_id))
             if worker:
                 worker.close('process_interrupted')
-            self.worker = None
+            self._forget(key)
             if published:
                 tools.repository.add_event(mission_id, 'turn.warning', {
                     'turn_id': turn_id, 'agent_id': agent_id, 'provider_id': provider_id,
@@ -445,7 +519,11 @@ class AntigravitySessionPool:
                                failure_code=timeout_code if isinstance(exc, TimeoutError) else None)
         finally:
             adapter.live_progress.clear(mission_id, turn_id)
-            self.lock.release()
+            self._release(key)
+
+    def _forget(self, key):
+        with self.lock:
+            self.workers.pop(key, None)
 
 
 SESSION_POOL = AntigravitySessionPool()
