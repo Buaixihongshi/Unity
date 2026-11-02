@@ -3817,6 +3817,15 @@ summary:focus-visible {
 .obsv-check-card b { display: block; margin: 3px 0 2px; font-size: 1.35rem; font-weight: 900; }
 .obsv-check-card small { color: var(--ink-muted); font-size: 0.66rem; }
 .obsv-check-card--summary { background: var(--paper-soft); }
+.obsv-check-group { display: grid; gap: 6px; min-width: 0; }
+.obsv-check-group header { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.obsv-check-group h4 { margin: 0; font-size: 0.74rem; font-weight: 900; white-space: nowrap; }
+.obsv-check-group header span { color: var(--ink-muted); font-size: 0.64rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obsv-health { display: flex; align-items: center; gap: 3px; margin-top: 4px; color: var(--warning); font-size: 0.62rem; font-style: normal; font-weight: 700; line-height: 1.3; }
+.obsv-health svg { flex: none; }
+.obsv-layer { display: inline-block; margin-right: 5px; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-size: 0.58rem; font-weight: 800; text-transform: uppercase; vertical-align: 1px; }
+.obsv-layer--trace { color: var(--warning); }
+.obsv-layer--agent { color: var(--ink-muted); }
 
 .obsv-tables { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; }
 .obsv-panel table { width: 100%; border-collapse: collapse; font-size: 0.7rem; table-layout: fixed; }
