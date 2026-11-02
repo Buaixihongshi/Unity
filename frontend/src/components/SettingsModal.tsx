@@ -1006,13 +1006,15 @@ export function SettingsModal({
                                     >
                                       <PersonaPortrait agentId={agent.id}>{agent.display_name.slice(0, 1)}</PersonaPortrait>
                                     </span>
-                                    <span className="role-name">{agent.display_name}</span>
-                                    {agent.custom && (
-                                      <span className="settings-source-badge">自定义</span>
-                                    )}
-                                    {isUserOverride && (
-                                      <span className="settings-source-badge">已修改</span>
-                                    )}
+                                    <div className="role-labels">
+                                      <span className="role-name" title={agent.display_name}>{agent.display_name}</span>
+                                      {agent.custom && (
+                                        <span className="settings-source-badge">自定义</span>
+                                      )}
+                                      {isUserOverride && (
+                                        <span className="settings-source-badge">已修改</span>
+                                      )}
+                                    </div>
                                   </div>
                                 </th>
                                 <td>
