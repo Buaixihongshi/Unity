@@ -59,3 +59,8 @@ def test_recovery_and_handover_keep_constraint_without_steps():
     recovery = host_rules.NO_REPLAY.text.format(last_action='写入 a.py')
     assert '不得整轮重放' in recovery and '先核对' not in recovery
     assert '先读' not in host_rules.MODEL_HANDOVER.text
+
+
+def test_agy_server_name_hint_matches_plugin_namespace():
+    from backend.app.adapters import antigravity_config
+    assert antigravity_config.SERVER_NAME in host_rules.AGY_SERVER_NAME.text

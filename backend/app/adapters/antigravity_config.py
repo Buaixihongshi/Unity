@@ -1,20 +1,25 @@
-"""Guarded mutate-restore of Antigravity CLI's global MCP config.
+"""Per-workspace MCP injection for Antigravity CLI, plus legacy cleanup.
 
-Antigravity CLI 1.0.2 loads MCP servers ONLY from the hardcoded global
-``~/.gemini/config/mcp_config.json`` — it ignores ``GEMINI_CLI_HOME`` /
-``XDG_CONFIG_HOME`` / ``--app_data_dir``, ``HOME`` redirect breaks its OS
-keyring auth, and there is no ``--mcp-config`` flag. So the only way to inject
-the Unity MCP server is to temporarily rewrite that global file for the
-duration of the agy subprocess, then restore it.
+agy 1.4 loads plugins listed in a workspace's ``.agents/plugins.json``, and a
+plugin may bundle MCP servers. Every Unity agy process already runs from its
+own throwaway workspace, so the Unity server is written there as a plugin:
+each process sees only its own server, nothing outside the workspace changes,
+and concurrent agy processes need no shared lock.
 
-Safety mechanisms (all required, see the amending ADR
-2026-05-27-antigravity-global-config-exception.md):
-  1. ``fcntl.flock`` cross-process exclusive lock held for the whole turn.
-  2. ``finally`` restore (original content, or delete if it did not exist).
-  3. A sentinel file persists the true-original so a hard-kill mid-turn can be
-     recovered on the next run / at startup.
-  4. We only write ``{"mcpServers": {"yiren_hub": ...}}`` — the user's own MCP
-     servers are hidden during the run, never leaked into agent turns.
+agy namespaces plugin servers as ``<plugin>_<server>``; :data:`SERVER_NAME`
+is what the model passes to ``call_mcp_tool``. It is deliberately not
+``yiren_hub``: older Unity builds still inject ``yiren_hub`` into the global
+``~/.gemini/config/mcp_config.json`` while their turns run, and agy drops a
+plugin server whose namespaced name collides with a global one.
+
+Older builds still rewrite that global file under an exclusive ``fcntl.flock``
+for each turn, and agy loads global servers next to plugin ones. A new agy
+started meanwhile would see the older instance's ``yiren_hub``, which writes
+into that instance's database. :func:`legacy_config_excluded` therefore holds
+the same lock *shared* while an agy process runs: new instances never block
+each other, older ones wait until no new agy is running and vice versa. Under
+the shared lock no older instance can be mid-turn, so any sentinel left is a
+crash leftover and is restored before agy starts.
 
 Paths are computed via functions (not module-level constants) so tests can
 monkeypatch ``Path.home``.
@@ -28,11 +33,15 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
-# Mirror of MCPSubprocessAdapter.MCP_SERVER_NAME; duplicated to keep this module
-# dependency-free (mcp_subprocess imports us, not the other way around).
-_SERVER_NAME = "yiren_hub"
+PLUGIN_NAME = "unity"
+PLUGIN_SERVER = "hub"
+SERVER_NAME = f"{PLUGIN_NAME}_{PLUGIN_SERVER}"
+
+
+class WaitCancelled(Exception):
+    """The caller gave up waiting for the global config lock (e.g. user stop)."""
 
 # agy 1.0.3 swallows several fatal conditions into silent ``exit 0`` (no stdout
 # / no stderr) — notably "not logged into Antigravity" and Google-side quota
@@ -60,18 +69,6 @@ def _lock_path() -> Path:
 
 def _sentinel_path() -> Path:
     return _config_dir() / "mcp_config.json.yiren-bak"
-
-
-def _read_or_none(path: Path) -> Optional[str]:
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-
-
-def _write_sentinel(original: Optional[str]) -> None:
-    payload = {"existed": original is not None, "content": original}
-    _sentinel_path().write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _restore(original: Optional[str]) -> None:
@@ -102,60 +99,79 @@ def _recover_if_crashed() -> None:
 
 
 @contextlib.contextmanager
-def _flock(timeout: Optional[float] = None) -> Iterator[None]:
-    """Cross-process exclusive lock on ~/.gemini/config/.yiren-mcp.lock."""
+def _flock(timeout: Optional[float] = None, *, shared: bool = False,
+           cancelled: Optional[Callable[[], bool]] = None,
+           on_wait: Optional[Callable[[], None]] = None) -> Iterator[None]:
+    """Cross-process lock on ~/.gemini/config/.yiren-mcp.lock."""
     cfg_dir = _config_dir()
     cfg_dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(_lock_path()), os.O_CREAT | os.O_RDWR, 0o600)
+    mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
     try:
-        if timeout is None:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        if timeout is None and cancelled is None and on_wait is None:
+            fcntl.flock(fd, mode)
         else:
-            deadline = time.monotonic() + timeout
+            deadline = None if timeout is None else time.monotonic() + timeout
+            waited = False
             while True:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fd, mode | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
+                    if not waited and on_wait is not None:
+                        on_wait()
+                    waited = True
+                    if cancelled is not None and cancelled():
+                        raise WaitCancelled('Stopped while waiting for the Antigravity MCP configuration')
+                    if deadline is not None and time.monotonic() >= deadline:
                         raise TimeoutError('Antigravity MCP configuration is in use')
-                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                    time.sleep(0.05 if deadline is None else min(0.05, max(0, deadline - time.monotonic())))
         yield
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
 
-@contextlib.contextmanager
-def guarded_global_mcp_config(server_spec: dict[str, Any], *, lock_timeout: Optional[float] = None) -> Iterator[Path]:
-    """Temporarily replace the global MCP config with only our yiren_hub server.
+def write_workspace_plugin(workspace: Path, server_spec: dict[str, Any]) -> Path:
+    """Register ``server_spec`` as this workspace's Unity MCP server.
 
-    Holds the lock for the entire ``with`` body (the caller runs and waits on
-    the agy subprocess inside it). Restores the original on exit, even on
-    exception / kill-then-finally.
+    Returns the plugin's ``mcp_config.json`` (useful for diagnostics). The
+    ``plugins.json`` schema is ``{"entries": [{"path", "include_only"}]}``;
+    agy ignores the file entirely when it does not parse.
     """
-    with _flock(timeout=lock_timeout):
+    plugins = workspace / ".unity-plugins"
+    root = plugins / PLUGIN_NAME
+    (root / ".antigravity-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".antigravity-plugin" / "plugin.json").write_text(json.dumps({
+        "name": PLUGIN_NAME, "version": "1.0.0", "description": "Unity host tools for this turn",
+    }), encoding="utf-8")
+    config = root / "mcp_config.json"
+    config.write_text(json.dumps({"mcpServers": {PLUGIN_SERVER: server_spec}}, ensure_ascii=False, indent=2),
+                      encoding="utf-8")
+    agents = workspace / ".agents"
+    agents.mkdir(exist_ok=True)
+    (agents / "plugins.json").write_text(json.dumps({
+        "entries": [{"path": str(plugins), "include_only": [PLUGIN_NAME]}],
+    }), encoding="utf-8")
+    return config
+
+
+@contextlib.contextmanager
+def legacy_config_excluded(timeout: Optional[float] = None, *,
+                           cancelled: Optional[Callable[[], bool]] = None,
+                           on_wait: Optional[Callable[[], None]] = None) -> Iterator[None]:
+    """Hold while an agy process runs so no older build injects the global config."""
+    with _flock(timeout, shared=True, cancelled=cancelled, on_wait=on_wait):
+        # Restoring under a shared lock is safe: only crashed older owners leave a
+        # sentinel, and concurrent new holders restore the same original content.
         _recover_if_crashed()
-        target = global_mcp_config_path()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        original = _read_or_none(target)
-        _write_sentinel(original)
-        target.write_text(
-            json.dumps({"mcpServers": {_SERVER_NAME: server_spec}}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        try:
-            yield target
-        finally:
-            _restore(original)
-            _sentinel_path().unlink(missing_ok=True)
+        yield
 
 
 def recover_antigravity_global_config() -> None:
-    """Startup crash recovery. No-op when ~/.gemini/config does not exist.
+    """Restore a global config an older Unity build left behind when killed.
 
-    Covers the window where a hard-kill left our temp config behind and the
-    user ran agy manually before the next Unity turn.
+    No-op when ~/.gemini/config does not exist.
 
     Fast path: if no sentinel exists there is nothing to recover, so we skip
     acquiring the lock entirely — this keeps the common (no-crash) case
@@ -166,8 +182,7 @@ def recover_antigravity_global_config() -> None:
         return
     if not _sentinel_path().is_file():
         return
-    # A retained CLI can legitimately own the sentinel. Do not wait for that
-    # worker here, or construction of the next adapter would deadlock reuse.
+    # A live older instance can legitimately own the sentinel; never wait for it.
     try:
         with _flock(timeout=0):
             _recover_if_crashed()
