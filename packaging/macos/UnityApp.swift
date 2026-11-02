@@ -267,10 +267,160 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func showStatus(_ text: String) {
         let escaped = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
-        webView.loadHTMLString("""
-        <html><body style="font:15px -apple-system;display:flex;height:100vh;margin:0;align-items:center;
-        justify-content:center;color:#555;background:#fafafa">\(escaped)</body></html>
-        """, baseURL: nil)
+        let isError = escaped.contains("退出") || escaped.contains("无法") || escaped.contains("超时") || escaped.contains("错误")
+        let indicatorColor = isError ? "#c84a32" : "#7ba79d"
+        let statusTitle = isError ? "后端服务异常" : escaped
+        let detailHtml = isError ? "<p class=\"sub\">\(escaped)</p>" : ""
+        let cruiseClass = isError ? "" : "active"
+        let breatheClass = isError ? "" : "breathe"
+
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <style>
+          :root {
+            --bg: #fdfbf7;
+            --ink: #18191a;
+            --muted: #6e6b65;
+            --sub: #908d86;
+            --shadow: rgba(0, 0, 0, 0.12);
+            --ind: \(indicatorColor);
+          }
+          @media (prefers-color-scheme: dark) {
+            :root {
+              --bg: #121314;
+              --ink: #f5f5f7;
+              --muted: #9ea0a5;
+              --sub: #707277;
+              --shadow: rgba(0, 0, 0, 0.45);
+            }
+          }
+          body {
+            margin: 0;
+            padding: 24px;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+            box-sizing: border-box;
+          }
+          .box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            max-width: 480px;
+          }
+          .logo-wrap {
+            width: 140px;
+            height: 140px;
+            margin-bottom: 20px;
+          }
+          .logo-wrap.breathe {
+            animation: breathe 3.2s ease-in-out infinite;
+          }
+          svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+            color: var(--ink);
+          }
+          .shadow {
+            fill: none;
+            stroke: var(--shadow);
+            stroke-width: 64px;
+            stroke-linecap: round;
+            filter: blur(4px);
+          }
+          .mobius {
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 56px;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+          }
+          .cap {
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 56px;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+          }
+          .cruise {
+            fill: none;
+            stroke: #7ba79d;
+            stroke-width: 24px;
+            stroke-linecap: round;
+            display: none;
+          }
+          .cruise.active {
+            display: block;
+            filter: drop-shadow(0 0 6px #7ba79d);
+            animation: cruise 2.4s linear infinite;
+          }
+          .title {
+            margin: 0 0 8px;
+            font-size: 15px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: -0.2px;
+          }
+          .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--ind);
+            box-shadow: 0 0 6px var(--ind);
+          }
+          .sub {
+            margin: 0;
+            font-size: 13px;
+            color: var(--sub);
+            line-height: 1.5;
+            word-break: break-all;
+          }
+          @keyframes breathe {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+          }
+          @keyframes cruise {
+            0% { stroke-dashoffset: 1000; }
+            100% { stroke-dashoffset: 0; }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .logo-wrap.breathe { animation: none !important; }
+            .cruise.active { display: none !important; }
+          }
+        </style>
+        </head>
+        <body>
+          <div class="box">
+            <div class="logo-wrap \(breatheClass)">
+              <svg viewBox="0 0 512 512" aria-hidden="true">
+                <path class="shadow"
+                  d="M298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1" />
+                <path class="mobius" pathLength="1000"
+                  d="M256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1C210,214.1 206.1,211.1 201.9,208.3C197.8,205.5 193.5,202.8 189,200.3C184.5,197.8 179.9,195.4 175,193.4C170.1,191.3 165.1,189.5 159.8,188C154.6,186.5 149.1,185.3 143.6,184.7C138,184 132.2,183.7 126.4,184C120.6,184.3 114.6,185.1 108.8,186.6C103,188.1 97.1,190.2 91.6,193.1C86.1,195.9 80.7,199.5 76,203.7C71.2,208 66.8,213 63.3,218.4C59.7,223.8 56.8,230 54.9,236.3C53,242.6 52,249.4 52,256C52,262.6 53,269.4 54.9,275.7C56.8,282 59.7,288.2 63.3,293.6C66.8,299 71.2,304 76,308.3C80.7,312.5 86.1,316.1 91.6,318.9C97.1,321.8 103,323.9 108.8,325.4C114.6,326.9 120.6,327.7 126.4,328C132.2,328.3 138,328 143.6,327.3C149.1,326.7 154.6,325.5 159.8,324C165.1,322.5 170.1,320.7 175,318.6C179.9,316.6 184.5,314.2 189,311.7C193.5,309.2 197.8,306.5 201.9,303.7C206.1,300.9 210,297.9 213.9,294.9C217.7,291.9 221.4,288.7 225.1,285.6C228.7,282.4 232.2,279.2 235.7,275.9C239.2,272.6 242.6,269.3 246,266C249.3,262.7 252.7,259.3 256,256C259.3,252.7 262.7,249.3 266,246C269.4,242.7 272.8,239.4 276.3,236.1C279.8,232.8 283.3,229.6 286.9,226.4C290.6,223.3 294.3,220.1 298.1,217.1C302,214.1 305.9,211.1 310.1,208.3C314.2,205.5 318.5,202.8 323,200.3C327.5,197.8 332.1,195.4 337,193.4C341.9,191.3 346.9,189.5 352.2,188C357.4,186.5 362.9,185.3 368.4,184.7C374,184 379.8,183.7 385.6,184C391.4,184.3 397.4,185.1 403.2,186.6C409,188.1 414.9,190.2 420.4,193.1C425.9,195.9 431.3,199.5 436,203.7C440.8,208 445.2,213 448.7,218.4C452.3,223.8 455.2,230 457.1,236.3C459,242.6 460,249.4 460,256C460,262.6 459,269.4 457.1,275.7C455.2,282 452.3,288.2 448.7,293.6C445.2,299 440.8,304 436,308.3C431.3,312.5 425.9,316.1 420.4,318.9C414.9,321.8 409,323.9 403.2,325.4C397.4,326.9 391.4,327.7 385.6,328C379.8,328.3 374,328 368.4,327.3C362.9,326.7 357.4,325.5 352.2,324C346.9,322.5 341.9,320.7 337,318.6C332.1,316.6 327.5,314.2 323,311.7C318.5,309.2 314.2,306.5 310.1,303.7C305.9,300.9 302,297.9 298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256Z" />
+                <path class="cap"
+                  d="M298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1" />
+                <path class="cruise \(cruiseClass)" pathLength="1000" stroke-dasharray="140 860" stroke-dashoffset="1000"
+                  d="M256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1C210,214.1 206.1,211.1 201.9,208.3C197.8,205.5 193.5,202.8 189,200.3C184.5,197.8 179.9,195.4 175,193.4C170.1,191.3 165.1,189.5 159.8,188C154.6,186.5 149.1,185.3 143.6,184.7C138,184 132.2,183.7 126.4,184C120.6,184.3 114.6,185.1 108.8,186.6C103,188.1 97.1,190.2 91.6,193.1C86.1,195.9 80.7,199.5 76,203.7C71.2,208 66.8,213 63.3,218.4C59.7,223.8 56.8,230 54.9,236.3C53,242.6 52,249.4 52,256C52,262.6 53,269.4 54.9,275.7C56.8,282 59.7,288.2 63.3,293.6C66.8,299 71.2,304 76,308.3C80.7,312.5 86.1,316.1 91.6,318.9C97.1,321.8 103,323.9 108.8,325.4C114.6,326.9 120.6,327.7 126.4,328C132.2,328.3 138,328 143.6,327.3C149.1,326.7 154.6,325.5 159.8,324C165.1,322.5 170.1,320.7 175,318.6C179.9,316.6 184.5,314.2 189,311.7C193.5,309.2 197.8,306.5 201.9,303.7C206.1,300.9 210,297.9 213.9,294.9C217.7,291.9 221.4,288.7 225.1,285.6C228.7,282.4 232.2,279.2 235.7,275.9C239.2,272.6 242.6,269.3 246,266C249.3,262.7 252.7,259.3 256,256Z" />
+              </svg>
+            </div>
+            <div class="title"><span class="dot"></span><span>\(statusTitle)</span></div>
+            \(detailHtml)
+          </div>
+        </body>
+        </html>
+        """
+        webView.loadHTMLString(html, baseURL: nil)
     }
 
     // MARK: Navigation, popups and downloads

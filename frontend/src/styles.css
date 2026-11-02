@@ -692,6 +692,89 @@ summary:focus-visible {
   box-shadow: 4px 4px 0 var(--danger);
 }
 
+.onboarding-card--loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.onboarding-mobius-wrap {
+  width: 96px;
+  height: 96px;
+  margin: 4px auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: onboardingMobiusBreathe 3.2s ease-in-out infinite;
+}
+
+.onboarding-mobius-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: var(--ink);
+}
+
+.onboarding-mobius-svg .mobius-track-loop {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 56px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.onboarding-mobius-svg .mobius-cross-cap {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 56px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.onboarding-mobius-svg .mobius-depth-shadow {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.12);
+  stroke-width: 64px;
+  stroke-linecap: round;
+  filter: blur(4px);
+}
+
+:root[data-theme="dark"] .onboarding-mobius-svg .mobius-depth-shadow,
+[data-theme="dark"] .onboarding-mobius-svg .mobius-depth-shadow {
+  stroke: rgba(0, 0, 0, 0.45);
+}
+
+.onboarding-mobius-svg .mobius-cruise-flow {
+  fill: none;
+  stroke: var(--sage);
+  stroke-width: 24px;
+  stroke-linecap: round;
+  stroke-dasharray: 140 860;
+  stroke-dashoffset: 1000;
+  animation: onboardingMobiusCruise 2.4s linear infinite;
+  filter: drop-shadow(0 0 6px var(--sage));
+}
+
+@keyframes onboardingMobiusBreathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+
+@keyframes onboardingMobiusCruise {
+  0% { stroke-dashoffset: 1000; }
+  100% { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-mobius-wrap {
+    animation: none !important;
+  }
+  .onboarding-mobius-svg .mobius-cruise-flow {
+    display: none !important;
+  }
+}
+
 .onboarding-card--wide {
   width: min(100%, 820px);
 }
