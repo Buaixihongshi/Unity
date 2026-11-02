@@ -122,3 +122,33 @@ def test_packaging_keeps_its_interpreter_off_the_users_path():
     packaging = (Path(__file__).resolve().parents[2] / "scripts/package-macos.sh").read_text()
     installs = [line for line in packaging.splitlines() if line.lstrip().startswith("uv python install")]
     assert installs and all("--no-bin" in line for line in installs)
+
+
+def test_macos_status_mobius_path_covers_both_loops_and_shares_cruise():
+    """Issue #115: macOS UnityApp.swift cruise path must cover both loops and share mobiusPath."""
+    import re
+
+    swift_path = Path(__file__).resolve().parents[2] / "packaging/macos/UnityApp.swift"
+    content = swift_path.read_text(encoding="utf-8")
+
+    mobius_match = re.search(r'private static let mobiusPath\s*=\s*"([^"]+)"', content)
+    assert mobius_match, "mobiusPath constant must be defined in UnityApp.swift"
+    mobius_path = mobius_match.group(1)
+
+    # Extract all coordinate numbers to verify geometric loop coverage
+    coords = [float(num) for num in re.findall(r"[-+]?\b\d+(?:\.\d+)?\b", mobius_path)]
+    x_coords = coords[0::2]
+    assert min(x_coords) <= 60, "mobiusPath must reach outer boundary of left loop (x <= 60)"
+    assert max(x_coords) >= 450, "mobiusPath must reach outer boundary of right loop (x >= 450)"
+    assert mobius_path.startswith("M256,256"), "mobiusPath must condense from center (256, 256)"
+    assert mobius_path.endswith("Z"), "mobiusPath must properly close with Z"
+
+    # Both mobius and cruise must strictly share Self.mobiusPath
+    assert '<path class="mobius" pathLength="1000" d="\\(Self.mobiusPath)" />' in content
+    assert '<path class="cruise \\(cruiseClass)" pathLength="1000" stroke-dasharray="140 860" stroke-dashoffset="1000" d="\\(Self.mobiusPath)" />' in content
+
+    # Dynamic cruise animation and accessibility checks
+    assert "@keyframes cruise" in content
+    assert ".cruise.active" in content
+    assert "@media (prefers-reduced-motion: reduce)" in content
+    assert ".cruise.active { display: none !important; }" in content
