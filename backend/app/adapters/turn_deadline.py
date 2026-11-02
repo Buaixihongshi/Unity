@@ -4,11 +4,13 @@ import time
 from collections import deque
 from typing import Callable, Optional
 
+from backend.app.adapters import antigravity_config
 from backend.app.adapters.stream_events import StreamEvent, StreamEventType
 from backend.app.adapters.turn_budget import remaining_timeout
 
 
 PROGRESS_CHECK_SECONDS = 300
+HUB_SERVER_NAMES = {"yiren_hub", antigravity_config.SERVER_NAME}
 HUB_WORK_TOOLS = {"read_context", "read_artifact", "write_artifact", "read_discussion_result"}
 
 
@@ -20,7 +22,7 @@ def is_tool_return(event: StreamEvent) -> bool:
         return False  # Hub work results are correlated through persisted tool events.
     if event.tool_name in {"call_mcp_tool", "mcp_tool_call"}:
         server = (event.tool_args or {}).get('ServerName')
-        if not isinstance(server, str) or server == 'yiren_hub':
+        if not isinstance(server, str) or server in HUB_SERVER_NAMES:
             return False
     return event.tool_phase in {"result", "completed", "failed"} and event.tool_ok is not None
 

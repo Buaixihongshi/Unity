@@ -9,10 +9,9 @@ Per-provider config rendering:
 - gemini: writes a ``settings.json`` under ``<HOME>/.gemini/`` in an
   ephemeral tmpdir and sets ``HOME`` so that Gemini reads our MCP
   server without touching ``~/.gemini``.
-- agy: Antigravity CLI 1.0.2 reads MCP only from the global
-  ``~/.gemini/config/mcp_config.json``; we guard-mutate-restore it for the
-  subprocess lifetime (see ``antigravity_config.guarded_global_mcp_config``)
-  and run from a throwaway workspace cwd.
+- agy: runs from a throwaway workspace cwd whose ``.agents/plugins.json``
+  registers the Unity server as a plugin (see
+  ``antigravity_config.write_workspace_plugin``); nothing global is touched.
 
 After the CLI exits we inspect the repository event log: if the agent message
 was published via MCP we mark the turn ``COMPLETED`` with summary ``"via MCP"``;
@@ -40,8 +39,10 @@ from uuid import uuid4
 from backend.app import extension_points
 from backend.app import host_rules
 from backend.app.adapters.antigravity_config import (
-    guarded_global_mcp_config,
+    WaitCancelled,
+    legacy_config_excluded,
     read_agy_log_hint,
+    write_workspace_plugin,
 )
 from backend.app.adapters.base import CLIAdapter, TurnOutcome
 from backend.app.adapters.cli_diagnostics import write_cli_diagnostic
@@ -254,17 +255,30 @@ class MCPSubprocessAdapter(CLIAdapter):
                     resume_session_id=resume_session_id,
                 )
             elif cli_basename == "agy":
-                cmd, config_path, cli_cwd, agy_server_spec = self._setup_antigravity(
+                cmd, config_path, cli_cwd = self._setup_antigravity(
                     tmp,
                     mcp_env,
                     mcp_prompt,
                     include_repo_context=not is_verification,
                 )
-                # Inject yiren_hub into the global ~/.gemini/config/mcp_config.json
-                # for the agy subprocess lifetime; released (restored) when the
-                # ExitStack (guard_stack) unwinds at the end of this `with`, after
-                # the subprocess has fully finished.
-                guard_stack.enter_context(guarded_global_mcp_config(agy_server_spec))
+                # Until agy exits, keep older Unity builds from injecting their
+                # yiren_hub into the global config, which this agy would load too.
+                def legacy_wait() -> None:
+                    repository.add_event(mission_id, "provider.activity", {
+                        "turn_id": turn_id, "agent_id": agent_id, "provider_id": provider_id,
+                        "activity_id": turn_id + ":legacy", "tool_name": "worker_queue",
+                        "phase": "started", "summary": "等待旧版 Unity 实例结束 Antigravity 轮次",
+                    })
+                try:
+                    guard_stack.enter_context(legacy_config_excluded(
+                        self.timeout, cancelled=lambda: interruption.pause_requested(mission_id),
+                        on_wait=legacy_wait))
+                except WaitCancelled:
+                    return TurnOutcome(status=TurnStatus.BLOCKED, summary=interruption.STOPPED_SUMMARY,
+                                       failure_code="stopped", retryable=False)
+                except TimeoutError:
+                    return TurnOutcome(status=TurnStatus.BLOCKED,
+                                       summary="等待旧版 Unity 实例释放 Antigravity 配置超时；本轮未发送。")
                 # Captured so read_agy_log_hint can filter to logs written during
                 # this run only. agy 1.0.3 swallows fatal conditions (no auth /
                 # Google quota 429) into silent exit 0, so we mine its own log
@@ -619,35 +633,20 @@ class MCPSubprocessAdapter(CLIAdapter):
         *,
         include_repo_context: bool = True,
     ) -> tuple:
-        """Prepare the agy command + a server_spec for the global-config guard.
+        """Prepare the agy command and its throwaway workspace.
 
-        Antigravity CLI 1.0.2 reads MCP servers ONLY from the global
-        ``~/.gemini/config/mcp_config.json`` (it ignores GEMINI_CLI_HOME /
-        XDG_CONFIG_HOME / --app_data_dir, has no --mcp-config flag, and
-        ``.agents/`` is agent metadata only). So we do NOT write any config
-        here — the caller injects ``server_spec`` into the global file via
-        ``guarded_global_mcp_config`` for the agy subprocess lifetime. We run
-        from a throwaway workspace so agy's ``.antigravitycli/`` project
-        registration lands in tmp, not the repo. ``--add-dir <repo>`` gives agy
-        the repo as read-only context. The host owns the renewable deadline;
-        agy's fixed ``--print-timeout`` is disabled.
+        The Unity server is registered as a plugin of that workspace, so the
+        process sees only its own server and nothing global changes. Running
+        there also keeps agy's ``.antigravitycli/`` project registration out of
+        the repo; ``--add-dir <repo>`` gives agy the repo as context. The host
+        owns the renewable deadline; agy's fixed ``--print-timeout`` is disabled.
 
-        Returns ``(cmd, debug_config_path, workspace_cwd, server_spec)``.
+        Returns ``(cmd, plugin_config_path, workspace_cwd)``.
         """
         workspace = tmp / "antigravity-workspace"
         workspace.mkdir(parents=True, exist_ok=True)
-        server_spec = self._antigravity_server_spec(mcp_env)
-
-        # Observability-only copy of what we inject globally (never read by agy).
-        debug_config_path = workspace / "yiren_mcp_config.debug.json"
-        debug_config_path.write_text(
-            json.dumps(
-                {"mcpServers": {MCP_SERVER_NAME: server_spec}},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        config_path = write_workspace_plugin(workspace, self._antigravity_server_spec(mcp_env))
+        mcp_prompt += host_rules.AGY_SERVER_NAME.text
 
         cmd_args = list(self.args)
         # Explicit text/json output would hide native tool progress. This
@@ -674,7 +673,7 @@ class MCPSubprocessAdapter(CLIAdapter):
         cmd_args[0:0] = ["--print-timeout", "0"]
 
         cmd = [self.command, *cmd_args, mcp_prompt]
-        return cmd, debug_config_path, workspace, server_spec
+        return cmd, config_path, workspace
 
     def _mcp_env(
         self,
@@ -750,7 +749,7 @@ class MCPSubprocessAdapter(CLIAdapter):
         return json.dumps(settings, ensure_ascii=False, indent=2)
 
     def _antigravity_server_spec(self, env: dict) -> dict:
-        """Return the inner MCP server dict injected into the global config."""
+        """Return the MCP server entry registered in the workspace plugin."""
         server_env = {k: str(v) for k, v in env.items()}
         python_path_parts = [os.getcwd()]
         existing_pythonpath = os.environ.get("PYTHONPATH")
