@@ -5,7 +5,7 @@
 > Turn Codex CLI, Claude Code, and Antigravity CLI into a configurable, collaborative, and observable local Agent team.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-2f6f64.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-2f6f64.svg)](CHANGELOG.md)
 
 [简体中文](README.md) | **English**
 
@@ -122,7 +122,7 @@ These screenshots were captured before the rename and show the former AgentClub 
 
 1. Download the latest `Unity-<version>-arm64.dmg` from [Releases](https://github.com/Buaixihongshi/Unity/releases). Only Apple silicon builds are available for now; macOS 12 or later is required.
 2. Open the dmg and drag Unity into Applications.
-3. Preview builds are not notarized by Apple yet. Before the first launch, run once in Terminal:
+3. The current DMG is not notarized by Apple. Before the first launch, run once in Terminal:
 
    ```bash
    xattr -dr com.apple.quarantine /Applications/Unity.app

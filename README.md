@@ -113,7 +113,7 @@ flowchart TD
 
 1. 在 [Releases](https://github.com/Buaixihongshi/Unity/releases) 下载最新的 `Unity-<版本>-arm64.dmg`。目前只提供 Apple 芯片（M 系列）版本，需要 macOS 12 或更高版本。
 2. 双击打开 dmg，把 Unity 拖进“应用程序”。
-3. 预览版还没有经过 Apple 公证，第一次打开前先在终端执行一次：
+3. 当前 DMG 尚未经过 Apple 公证，第一次打开前先在终端执行一次：
 
    ```bash
    xattr -dr com.apple.quarantine /Applications/Unity.app
