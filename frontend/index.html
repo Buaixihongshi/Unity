@@ -5,9 +5,178 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Unity</title>
+    <style>
+      :root {
+        --splash-bg: #fdfbf7;
+        --splash-ink: #18191a;
+        --splash-muted: #6e6b65;
+        --splash-sage: #7ba79d;
+        --splash-shadow: rgba(0, 0, 0, 0.12);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --splash-bg: #121314;
+          --splash-ink: #f5f5f7;
+          --splash-muted: #9ea0a5;
+          --splash-sage: #8fc2b7;
+          --splash-shadow: rgba(0, 0, 0, 0.45);
+        }
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background-color: var(--splash-bg);
+      }
+      #root {
+        height: 100%;
+      }
+      #unity-splash-skeleton {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: var(--splash-bg);
+        z-index: 9999;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      }
+      .unity-splash-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        width: 260px;
+        animation: unitySplashBreathe 3.2s ease-in-out infinite 1.3s;
+      }
+      .unity-splash-svg {
+        width: 160px;
+        height: 160px;
+        overflow: visible;
+        color: var(--splash-ink);
+      }
+      /* 纯墨色单轨莫比乌斯环 */
+      .unity-splash-mobius {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 56px;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 1000;
+        stroke-dashoffset: 1000;
+        opacity: 0;
+        animation: unitySplashDraw 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards 0.28s;
+      }
+      /* 中宫凝墨原点（r=28 严丝合缝匹配 56px 墨锋线宽） */
+      .unity-splash-dot {
+        fill: currentColor;
+        transform-origin: 256px 256px;
+        opacity: 0;
+        animation: unitySplashDotCondense 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+                   unitySplashDotFade 0.25s ease-out forwards 0.35s;
+      }
+      /* 闭合后显现的立体空间交叉盖层与微阴影 */
+      .unity-splash-cap {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 56px;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0;
+        animation: unitySplashFadeIn 0.35s ease-out forwards 1.18s;
+      }
+      .unity-splash-shadow {
+        fill: none;
+        stroke: var(--splash-shadow);
+        stroke-width: 64px;
+        stroke-linecap: round;
+        filter: blur(4px);
+        opacity: 0;
+        animation: unitySplashFadeIn 0.35s ease-out forwards 1.18s;
+      }
+      /* 状态文本 */
+      .unity-splash-status {
+        margin-top: 24px;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--splash-muted);
+        letter-spacing: -0.1px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        opacity: 0;
+        animation: unitySplashFadeIn 0.4s ease-out forwards 0.1s;
+      }
+      .unity-splash-indicator {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background-color: var(--splash-sage);
+        box-shadow: 0 0 6px var(--splash-sage);
+      }
+      @keyframes unitySplashDotCondense {
+        0% { transform: scale(0); opacity: 0; }
+        60% { transform: scale(1.15); opacity: 1; }
+        100% { transform: scale(1); opacity: 1; }
+      }
+      @keyframes unitySplashDotFade {
+        0% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+      @keyframes unitySplashDraw {
+        0% { stroke-dashoffset: 1000; opacity: 1; }
+        100% { stroke-dashoffset: 0; opacity: 1; }
+      }
+      @keyframes unitySplashFadeIn {
+        0% { opacity: 0; }
+        100% { opacity: 1; }
+      }
+      @keyframes unitySplashBreathe {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.02); }
+      }
+      /* 动效减弱偏好适配：即刻呈现静态完整 Logo，不闪烁不眩晕 */
+      @media (prefers-reduced-motion: reduce) {
+        .unity-splash-wrap {
+          animation: none !important;
+        }
+        .unity-splash-mobius {
+          stroke-dashoffset: 0 !important;
+          opacity: 1 !important;
+          animation: none !important;
+        }
+        .unity-splash-dot {
+          display: none !important;
+        }
+        .unity-splash-cap,
+        .unity-splash-shadow,
+        .unity-splash-status {
+          opacity: 1 !important;
+          animation: none !important;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="unity-splash-skeleton" aria-label="正在启动 Unity">
+        <div class="unity-splash-wrap">
+          <svg class="unity-splash-svg" viewBox="0 0 512 512" aria-hidden="true">
+            <path class="unity-splash-shadow"
+              d="M298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1" />
+            <path class="unity-splash-mobius" pathLength="1000"
+              d="M256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1C210,214.1 206.1,211.1 201.9,208.3C197.8,205.5 193.5,202.8 189,200.3C184.5,197.8 179.9,195.4 175,193.4C170.1,191.3 165.1,189.5 159.8,188C154.6,186.5 149.1,185.3 143.6,184.7C138,184 132.2,183.7 126.4,184C120.6,184.3 114.6,185.1 108.8,186.6C103,188.1 97.1,190.2 91.6,193.1C86.1,195.9 80.7,199.5 76,203.7C71.2,208 66.8,213 63.3,218.4C59.7,223.8 56.8,230 54.9,236.3C53,242.6 52,249.4 52,256C52,262.6 53,269.4 54.9,275.7C56.8,282 59.7,288.2 63.3,293.6C66.8,299 71.2,304 76,308.3C80.7,312.5 86.1,316.1 91.6,318.9C97.1,321.8 103,323.9 108.8,325.4C114.6,326.9 120.6,327.7 126.4,328C132.2,328.3 138,328 143.6,327.3C149.1,326.7 154.6,325.5 159.8,324C165.1,322.5 170.1,320.7 175,318.6C179.9,316.6 184.5,314.2 189,311.7C193.5,309.2 197.8,306.5 201.9,303.7C206.1,300.9 210,297.9 213.9,294.9C217.7,291.9 221.4,288.7 225.1,285.6C228.7,282.4 232.2,279.2 235.7,275.9C239.2,272.6 242.6,269.3 246,266C249.3,262.7 252.7,259.3 256,256C259.3,252.7 262.7,249.3 266,246C269.4,242.7 272.8,239.4 276.3,236.1C279.8,232.8 283.3,229.6 286.9,226.4C290.6,223.3 294.3,220.1 298.1,217.1C302,214.1 305.9,211.1 310.1,208.3C314.2,205.5 318.5,202.8 323,200.3C327.5,197.8 332.1,195.4 337,193.4C341.9,191.3 346.9,189.5 352.2,188C357.4,186.5 362.9,185.3 368.4,184.7C374,184 379.8,183.7 385.6,184C391.4,184.3 397.4,185.1 403.2,186.6C409,188.1 414.9,190.2 420.4,193.1C425.9,195.9 431.3,199.5 436,203.7C440.8,208 445.2,213 448.7,218.4C452.3,223.8 455.2,230 457.1,236.3C459,242.6 460,249.4 460,256C460,262.6 459,269.4 457.1,275.7C455.2,282 452.3,288.2 448.7,293.6C445.2,299 440.8,304 436,308.3C431.3,312.5 425.9,316.1 420.4,318.9C414.9,321.8 409,323.9 403.2,325.4C397.4,326.9 391.4,327.7 385.6,328C379.8,328.3 374,328 368.4,327.3C362.9,326.7 357.4,325.5 352.2,324C346.9,322.5 341.9,320.7 337,318.6C332.1,316.6 327.5,314.2 323,311.7C318.5,309.2 314.2,306.5 310.1,303.7C305.9,300.9 302,297.9 298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256Z" />
+            <path class="unity-splash-cap"
+              d="M298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1" />
+            <circle class="unity-splash-dot" cx="256" cy="256" r="28" />
+          </svg>
+          <div class="unity-splash-status">
+            <span class="unity-splash-indicator"></span>
+            <span>正在启动 Unity…</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
