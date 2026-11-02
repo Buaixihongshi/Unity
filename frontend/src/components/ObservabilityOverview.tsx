@@ -398,7 +398,9 @@ function TurnsTable({ data, onOpenTurn }: {
                 <td className="obsv-mono">{duration(row.duration_ms)}</td>
                 <td className="obsv-mono">{count(row.tokens)}</td>
                 <td className="obsv-mono">{money(row.cost)}</td>
-                <td className="obsv-tags">{row.checks.map((check) => <CheckTag key={check.name} check={check} />)}</td>
+                <td>
+                  <div className="obsv-tags">{row.checks.map((check) => <CheckTag key={check.name} check={check} />)}</div>
+                </td>
               </tr>
             ))}
           </tbody>
