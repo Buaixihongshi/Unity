@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { useObservabilityOverview, type ObservabilityWindow } from "../hooks/useObservabilityOverview";
 import { fetchObservabilityTurn } from "../lib/api";
 import { formatAgentName } from "../lib/missionView";
 import type {
   ObservabilityCheck,
+  ObservabilityLayer,
+  ObservabilityOverviewCheck,
   ObservabilityOverviewPayload,
   ObservabilityOverviewTurn,
   ObservabilityStep,
@@ -20,10 +22,30 @@ const WINDOWS: { id: ObservabilityWindow; label: string }[] = [
 ];
 
 const CHECK_LABEL: Record<string, string> = {
+  turn_closed: "回合终态",
+  blocked_explained: "阻塞说明",
+  usage_reported: "用量记录",
   claims_match_events: "声明一致",
   tool_errors_handled: "错误处理",
-  blocked_explained: "阻塞说明",
 };
+
+// Older payloads carry no layer; the check name decides.
+const TRACE_CHECKS = new Set(["turn_closed", "blocked_explained", "usage_reported"]);
+
+const LAYERS: { id: ObservabilityLayer; label: string; hint: string }[] = [
+  { id: "trace", label: "Trace 可信度", hint: "记录本身能不能信：宿主管道的问题" },
+  { id: "agent", label: "Agent 行为", hint: "Agent 说的和做的：trace 不可信的回合不评" },
+];
+
+const ATTRIBUTION_LABEL: Record<string, string> = {
+  environment: "环境",
+  user: "用户",
+  agent: "Agent",
+};
+
+function layerOf(item: { name?: string; check?: string; layer?: ObservabilityLayer }): ObservabilityLayer {
+  return item.layer ?? (TRACE_CHECKS.has(item.name ?? item.check ?? "") ? "trace" : "agent");
+}
 
 const STATUS_LABEL: Record<string, string> = {
   completed: "完成",
@@ -72,6 +94,36 @@ function CheckTag({ check, full = false }: { check: ObservabilityCheck; full?: b
     <span className={`obsv-tag obsv-tag--${tone}`} title={`${check.name}：${check.note}`}>
       {label}
     </span>
+  );
+}
+
+function CheckGroup({ layer, rows }: { layer: (typeof LAYERS)[number]; rows: ObservabilityOverviewCheck[] }) {
+  const scored = rows.reduce((sum, row) => sum + row.pass + row.fail, 0);
+  const passed = rows.reduce((sum, row) => sum + row.pass, 0);
+  const failed = rows.reduce((sum, row) => sum + row.fail, 0);
+  return (
+    <section className="obsv-check-group" aria-label={layer.label}>
+      <header><h4>{layer.label}</h4><span>{layer.hint}</span></header>
+      <div className="obsv-checks">
+        {rows.map((row) => (
+          <div key={row.name} className="obsv-check-card" title={row.name}>
+            <span>{CHECK_LABEL[row.name] ?? row.name}</span>
+            <b>{row.rate === null ? "—" : pct(row.rate)}</b>
+            <small>{row.pass} 通过 · {row.fail} 失败 · {row.na} n/a</small>
+            {row.health ? (
+              <em className="obsv-health" title={row.health}>
+                <AlertTriangle size={11} aria-hidden="true" />{row.health}
+              </em>
+            ) : null}
+          </div>
+        ))}
+        <div className="obsv-check-card obsv-check-card--summary">
+          <span>检查通过</span>
+          <b>{scored ? `${passed}/${scored}` : "—"}</b>
+          <small>{failed} 条失败</small>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -140,9 +192,6 @@ function Overview({ data, onOpenTurns, onOpenTurn }: {
 }) {
   const { totals, coverage, checks, by_agent, by_provider, failures, recent_turns, daily, spend } = data;
   const dailyMax = Math.max(1, ...daily.map((row) => row.turns));
-  const totalFail = checks.reduce((sum, row) => sum + row.fail, 0);
-  const scored = checks.reduce((sum, row) => sum + row.pass + row.fail, 0);
-  const passed = checks.reduce((sum, row) => sum + row.pass, 0);
 
   return (
     <div className="obsv-top">
@@ -184,31 +233,30 @@ function Overview({ data, onOpenTurns, onOpenTurn }: {
       </aside>
 
       <div className="obsv-main">
-        <div className="obsv-checks">
-          {checks.map((row) => (
-            <div key={row.name} className="obsv-check-card" title={row.name}>
-              <span>{CHECK_LABEL[row.name] ?? row.name}</span>
-              <b>{row.rate === null ? "—" : pct(row.rate)}</b>
-              <small>{row.pass} 通过 · {row.fail} 失败 · {row.na} n/a</small>
-            </div>
-          ))}
-          <div className="obsv-check-card obsv-check-card--summary">
-            <span>检查通过</span>
-            <b>{scored ? `${passed}/${scored}` : "—"}</b>
-            <small>{totalFail} 条失败</small>
-          </div>
-        </div>
+        {LAYERS.map((layer) => {
+          const rows = checks.filter((row) => layerOf(row) === layer.id);
+          return rows.length ? <CheckGroup key={layer.id} layer={layer} rows={rows} /> : null;
+        })}
 
         <div className="obsv-tables">
           <div className="obsv-panel">
             <h4>Agent</h4>
             <table>
-              <thead><tr><th>Agent</th><th>回合</th><th>工具</th><th>花费</th></tr></thead>
+              <thead>
+                <tr><th>Agent</th><th>回合</th>
+                  <th title="Agent 自身造成的阻塞，含无法归类的">阻塞</th>
+                  <th title="网络、鉴权、配置等环境原因 / 用户停止，不计入 Agent">环境/用户</th>
+                  <th>工具</th><th>花费</th></tr>
+              </thead>
               <tbody>
                 {by_agent.map((row) => (
                   <tr key={row.agent}>
                     <td><b>{formatAgentName(row.agent)}</b></td>
                     <td>{row.turns}</td>
+                    <td className={row.blocked ? "obsv-bad" : "obsv-muted"}>{row.blocked ?? "—"}</td>
+                    <td className="obsv-muted">
+                      {row.blocked_environment === undefined ? "—" : `${row.blocked_environment}/${row.blocked_user ?? 0}`}
+                    </td>
                     <td>{row.tools}</td>
                     <td>{money(row.cost)}</td>
                   </tr>
@@ -249,7 +297,12 @@ function Overview({ data, onOpenTurns, onOpenTurn }: {
                 {failures.slice(0, 3).map((row) => (
                   <li key={`${row.turn_id}-${row.check}`}>
                     <button type="button" className="obsv-failure" onClick={() => onOpenTurn(row.turn_id)}>
-                      <strong>{row.check} · {row.agent}</strong>
+                      <strong>
+                        <span className={`obsv-layer obsv-layer--${layerOf(row)}`}>
+                          {layerOf(row) === "trace" ? "trace" : "agent"}
+                        </span>
+                        {row.check} · {row.agent}
+                      </strong>
                       <span>{row.note}</span>
                     </button>
                   </li>
@@ -298,18 +351,19 @@ function TurnsTable({ data, onOpenTurn }: {
         <div className="obsv-panel-head"><h4>检查项</h4><span>{data.totals.turns} 回合</span></div>
         <table>
           <thead>
-            <tr><th>检查项</th><th>通过</th><th>失败</th><th>n/a</th><th>通过率</th><th>最近失败</th></tr>
+            <tr><th>检查项</th><th>层</th><th>通过</th><th>失败</th><th>n/a</th><th>通过率</th><th>最近失败 / 提示</th></tr>
           </thead>
           <tbody>
             {data.checks.map((row) => (
               <tr key={row.name}>
                 <td><b>{row.name}</b></td>
+                <td className="obsv-muted">{LAYERS.find((layer) => layer.id === layerOf(row))?.label}</td>
                 <td className="obsv-ok">{row.pass}</td>
                 <td className={row.fail ? "obsv-bad" : "obsv-muted"}>{row.fail}</td>
                 <td className="obsv-muted">{row.na}</td>
                 <td>{row.rate === null ? "—" : pct(row.rate)}</td>
                 <td className="obsv-muted">
-                  {data.failures.find((failure) => failure.check === row.name)?.note ?? "—"}
+                  {data.failures.find((failure) => failure.check === row.name)?.note ?? row.health ?? "—"}
                 </td>
               </tr>
             ))}
@@ -422,6 +476,11 @@ function TurnDetail({ detail, loading, error, onRetry }: {
           <span>{turn.usage ? `${count(turn.tokens)} tok` : "token 未记录"}</span>
           <span>{money(turn.cost_usd)}</span>
           <span>{turn.steps.length} 步</span>
+          {turn.failure_class ? (
+            <span title="失败原因分类 · 归属">
+              {turn.failure_class} · {ATTRIBUTION_LABEL[turn.attribution ?? ""] ?? "—"}
+            </span>
+          ) : null}
         </div>
         <p className="obsv-muted obsv-turn-mission">{detail.mission.title}</p>
         <div className="obsv-tags">{turn.checks.map((check) => <CheckTag key={check.name} check={check} full />)}</div>

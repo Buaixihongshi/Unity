@@ -203,9 +203,9 @@ def test_run_checks_never_raises(monkeypatch):
         raise RuntimeError("bad check")
 
     monkeypatch.setitem(checks.CHECKS, "claims_match_events", boom)
-    result = checks.run_checks(turn_with("hi"))
-    assert result[0] == {"name": "claims_match_events", "source": "code", "value": None,
-                         "note": "check error"}
+    result = {c["name"]: c for c in checks.run_checks(turn_with("hi"))}
+    assert result["claims_match_events"] == {"name": "claims_match_events", "source": "code",
+                                             "layer": "agent", "value": None, "note": "check error"}
 
 
 # ---------------------------------------------------------------------------
