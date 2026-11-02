@@ -22,8 +22,6 @@ Unity 就是从那会儿开始做的：把 Codex CLI、Claude Code、Antigravity
 
 **伙伴有性格，是为了有温度。** 张楚岚通透机敏，宝宝坦率好奇，王也松弛笃定。我想要的气场是一间简约、有温度的工作室：熟人各忙各的，随口搭句话都接得上。
 
-**活人感是删出来的。** 最早每个角色都有一份又臭又长的设定，宝宝每轮光"说明书"就要收到三千来字，我随口说一句"你没有活人感"，她回了我一份评估报告。后来把说明书砍到一千字左右，只留身份、性格和几条相处原则，聊天还是派活交给模型自己判断，她才开始像个人。完整的前后对比在 [开发笔记：活人感是删出来的](docs/notes/making-partners-feel-alive.md)。
-
 ## 用起来是什么样
 
 **先聊聊。** 在输入框里选中 `@张楚岚`，说说你想做的事，需求没想好也没关系。想听几个人的看法就同时点名几位；开启讨论扩展后也可以用 `/discuss`，大家先各自独立回答，有分歧再交流，需要你取舍的地方会单独留下来。
@@ -39,79 +37,75 @@ Unity 就是从那会儿开始做的：把 Codex CLI、Claude Code、Antigravity
 ```mermaid
 flowchart TD
     subgraph Client["交互层"]
-        UI["桌面 / 网页客户端"]
-        Room["统一工作群 (@点名 · /discuss)"]
+        UI["桌面 / 网页客户端<br/>(React + Vite · macOS MenuBar)"]
+        Room["统一工作群<br/>(@点名 · /discuss 讨论 · 任务协作)"]
         UI --> Room
     end
 
-    subgraph Host["宿主编排内核 (FastAPI)"]
-        Orchestrator["任务与执行调度"]
-        A2A["A2A 协同协议"]
-        Context["统一上下文装配"]
-        Trace["回合观测与 Trace"]
+    subgraph Host["FastAPI 宿主编排内核"]
+        Orchestrator["任务与执行调度<br/>(MissionRunner · 自适应工作)"]
+        A2A["A2A 协同协议<br/>(invoke_agent · 就近兑现 · wait_reply · 防环路)"]
+        Context["统一上下文装配<br/>(assembly.py · 分层预算裁剪 · 原文精确补读)"]
+        ObservabilityEngine["回合观测与检查引擎<br/>(纯函数读时计算 · 行为审计 · 覆盖率)"]
 
         Room --> Orchestrator
         Orchestrator <--> A2A
         Orchestrator --> Context
-        Orchestrator -. 链路追踪 .-> Trace
+        Orchestrator -.-> ObservabilityEngine
     end
 
-    subgraph Adapters["适配层"]
-        MCP["Unity MCP 服务"]
-        Providers["CLI & 模型适配器"]
+    subgraph Adapters["Provider Router & MCP 工具层"]
+        MCP["Unity 统一 MCP 服务<br/>(read_context · write_artifact · save_checkpoint · memory)"]
+        Providers["模型与 CLI 适配器<br/>(Codex CLI · Claude Code · Antigravity CLI · 自定义 API)"]
 
         Context --> MCP
         Orchestrator --> Providers
+        MCP <--> Providers
     end
 
-    subgraph Storage["数据与持久化"]
-        MemFile["角色长期记忆 (Markdown)"]
-        DB["会话状态与索引 (SQLite)"]
-        Worktrees["任务工作树 (Git)"]
+    subgraph Storage["数据与状态持久化"]
+        MemFile["角色长期记忆<br/>(Markdown 文件为权威)"]
+        DB["SQLite 索引与会话状态<br/>(记忆索引 · 短期检查点 · 任务快照 · 观测事件)"]
+        Worktrees["独立任务工作树<br/>(task-worktrees 独立目录与分支)"]
 
         MCP <--> MemFile
         MCP <--> DB
+        Orchestrator <--> DB
         Providers --> Worktrees
     end
 
-    subgraph EvalSystem["评测体系 (待实现)"]
-        EVL["离线对照评测 (EVL)"]
-        EVL -. 对照基准 .-> Providers
+    subgraph EvalSystem["离线可评测体系 (EVL)"]
+        EvalRunner["A/B/C/D 配对对照评测<br/>(Single vs Multi-Agent · PR Replay · Rubric 评分)"]
+        EvalRunner -.-> Providers
     end
-
-    style EvalSystem stroke-dasharray: 5 5
-    style EVL stroke-dasharray: 5 5
 ```
 
 ### 核心机制实现
 
 - **A2A 协同协议（Agent-to-Agent）**：基于统一 MCP 工具 `invoke_agent` 实现伙伴之间的动态接力。支持单向移交（`fire_and_forget`）与带唤醒恢复栈的双向求助（`wait_reply`）。宿主在调度时对委派实行“就近兑现”，内置调用链防环检测与深度预算控制；在自主任务中自动沉淀为持久化子任务与非自审约束。[详见 A2A 协议规范](docs/A2A_PROTOCOL.md)。
 - **统一上下文装配（Context Management）**：由 `backend/app/memory/assembly.py` 统筹全局装配，杜绝全量历史无脑堆砌。按固定优先级与字符预算分层注入：未确认模型交接 → 长期记忆摘要 → 会话滚动检查点 → 对话与产物清单；配套 `read_context(message_ids=[...])` 原文补读机制，按需精准展开。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
-- **长期记忆与检查点（Memory）**：“文件为权威，SQLite 存派生索引”。角色长期记忆以独立 Markdown（带 frontmatter）原子落盘；SQLite 仅维护检索索引与短期滚动检查点（`save_checkpoint`），支持一键 `sync`/`rebuild` 自愈重建；角色可自主新增、按版本修订及安全遗忘条目。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
+- **长期记忆与检查点（Memory）**：“文件为权威，SQLite 存派生索引”。角色长期记忆以独立 Markdown（带 YAML frontmatter）原子落盘；SQLite 仅维护检索索引与短期滚动检查点（`save_checkpoint`），支持一键 `sync`/`rebuild` 自愈重建；角色可自主新增、按版本修订及安全遗忘条目。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
 - **回合观测与链路追踪（Trace / Observability）**：以“回合（Turn）”为第一判定单位（任务太大、单步太碎）。所有事件（CLI 原生工具、MCP 活动、A2A 委派、产物写入、Token 消耗）按回合聚合折叠。检查规则为纯函数“读时计算、不落库”，实时评估 `claims_match_events`（回复与行为一致性）、工具错误重试与阻塞说明，并提供全局跨会话 Trace 覆盖率与成本透视。[详见回合观测](docs/OBSERVABILITY.md)。
-- **离线多 Agent 评测（EVL / Evaluation，待实现）**：不盲目预设“多 Agent 一定更好”，而是回答在哪些任务更优、哪些任务反而更差。设计严格的 A/B/C/D 配对对照实验（单 Agent / 自我反思 / 固定流水线 / 动态 A2A），结合闭卷题集与真实 PR 回放（PR Replay），基于客观 Rubric 评分，量化 Token、延迟、成本、观点冗余度（Jaccard 相似度）与信息损耗。[详见评测实验](docs/EVALUATION.md)。
+- **离线多 Agent 评测（EVL / Evaluation）**：不盲目预设“多 Agent 一定更好”，而是回答在哪些任务更优、哪些任务反而更差。设计严格的 A/B/C/D 配对对照实验（单 Agent / 自我反思 / 固定流水线 / 动态 A2A），结合闭卷题集与真实 PR 回放（PR Replay），基于客观 Rubric 评分，量化 Token、延迟、成本、观点冗余度（Jaccard 相似度）与信息损耗。[详见评测实验](docs/EVALUATION.md)。
 
 ## 进度
 
-我心里的第一个用户是我自己，目前也只有我自己。做完一项打一个勾，🚧 表示正在做。
+做完一项打一个勾，🚧 表示正在做。
 
 - [x] 多位伙伴共享对话、记忆和产物，@ 点名、互相接力
 - [x] A2A 协议：通过 `invoke_agent` 实现单向接力与 `wait_reply` 双向唤醒，内置防环路与深度预算
 - [x] 上下文分层装配：模型交接 + 长期记忆 + 滚动检查点预算裁剪，支持按需精确补读
 - [x] 长期记忆与检查点：文件权威落盘、SQLite 派生索引自愈重建，记忆可查可改可回溯
 - [x] 回合观测（Trace）：以回合为单位捕获原生与 MCP 工具活动，纯函数读时检查，全局成本与覆盖率大盘
+- [x] 离线评测（EVL）：A/B/C/D 对照实验框架、闭卷基准题集与 Rubric 加权评分
 - [x] 角色和模型分开配置，接 Codex / Claude Code / Antigravity CLI 和自定义 API
 - [x] macOS 安装包（预览版，未公证，只有 Apple 芯片）
-- [ ] 🚧 离线评测体系（EVL）：A/B/C/D 对照实验框架与评测基准
 - [ ] 🚧 真实仓库 PR 回放评测（PR Replay 评测集扩充与自动化运行）
 - [ ] 🚧 讨论扩展 `/discuss`：能用，默认关闭
 - [ ] 🚧 任务扩展：独立分支和目录、预览、交付都有，但执行还是串行，长任务接续和失败恢复不够顺
 - [ ] 🚧 选择任意项目仓库：桌面版菜单有入口，网页版还没有；已有会话切换仓库还有 bug（#63）
 - [ ] 按预算自动挑选模型组合：同一件事，在不同成本下找到最合适的伙伴和模型搭配
 - [ ] 任务并行执行
-- [ ] Apple 公证、Intel 版
-
-普通聊天有单回合时限，比较大的开发需求先走任务提议会更顺。模型 API 目前只承担文本对话与讨论，开发执行需要 CLI。
 
 ## 先跑起来
 
@@ -130,7 +124,7 @@ flowchart TD
 桌面版自带运行环境，不用另装 Python 或 Node。它会读取登录 shell 的 PATH，通过 nvm、Homebrew 等方式安装的 CLI 也能找到。
 
 - 数据在 `~/Library/Application Support/Unity/`，伙伴的工作目录是其中的 `workspace/`。日志在 `~/Library/Logs/Unity/backend.log`。菜单“Unity › 打开数据目录 / 显示后端日志”可以直接打开这两个位置。
-- 使用 Workflow（自主开发）前，先在菜单“Unity › 选择项目仓库…”中选一个 Git仓库。每个任务会在仓库里新建 `codex/task-…` 分支，工作树放在数据目录的 `task-worktrees/` 下。没有选择仓库时，对话和讨论照常可用，Workflow 任务会提示先选择仓库。
+- 使用 Workflow（自主开发）前，先在菜单“Unity › 选择项目仓库…”中选一个 Git 仓库。每个任务会在仓库里新建 `codex/task-…` 分支，工作树放在数据目录的 `task-worktrees/` 下。没有选择仓库时，对话和讨论照常可用，Workflow 任务会提示先选择仓库。
 - 退出时如果还有任务在进行，会先请你确认。
 - 卸载时删除 `/Applications/Unity.app`；如果不再需要数据，再删除上面的数据目录。
 - 想自己打包，请看 [macOS 打包说明](packaging/macos/README.md)。
