@@ -8,7 +8,7 @@
 | 0-1 | `0-1-conversation-overview.png` | 会话页：消息流、产物卡片 | ccf91fe | 1280×800 | 9f0f0fdb3646 | 可用 |
 | 0-2 | `0-2-settings-extensions.png` | 设置 → 扩展 | ccf91fe | 1126×680 | 621f92eebf0f | 可用 |
 | 1-1 | `1-1-settings-team-config.png` | 设置 → 团队配置 | ccf91fe | 1126×680 | 235ba4f5b6f0 | 可用 |
-| 1-2 | `1-2-discuss-summary.png` | 会话页：讨论综合稿、待选择面板 | ccf91fe | 1512×838 | c56669df856b | 尺寸不符，按 1280×800 重拍 |
+| 1-2 | `1-2-discuss-summary.png` | 会话页：讨论综合稿、待选择面板 | ccf91fe | 1280×800 | cce9d2544300 | 可用 |
 | 1-3a | `1-3a-task-proposal-top.png` | 会话页：任务提议弹窗顶部 | ccf91fe | 1280×800 | 47f78323c065 | 可用 |
 | 1-3b | `1-3b-task-proposal-bottom.png` | 会话页：任务提议弹窗底部 | ccf91fe | 1280×800 | 1746b93da0e9 | 可用 |
 | 1-4 | — | 会话页：超时宿主记录 | — | — | — | 暂缺，等真实超时再补 |
