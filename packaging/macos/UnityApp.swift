@@ -5,6 +5,10 @@ import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     private static let projectKey = "ProjectDirectory"
+    private static let zoomKey = "PageZoom"
+    private static let minZoom: CGFloat = 0.5
+    private static let maxZoom: CGFloat = 3.0
+    private static let zoomStep: CGFloat = 0.1
     private static let mobiusPath = "M256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1C210,214.1 206.1,211.1 201.9,208.3C197.8,205.5 193.5,202.8 189,200.3C184.5,197.8 179.9,195.4 175,193.4C170.1,191.3 165.1,189.5 159.8,188C154.6,186.5 149.1,185.3 143.6,184.7C138,184 132.2,183.7 126.4,184C120.6,184.3 114.6,185.1 108.8,186.6C103,188.1 97.1,190.2 91.6,193.1C86.1,195.9 80.7,199.5 76,203.7C71.2,208 66.8,213 63.3,218.4C59.7,223.8 56.8,230 54.9,236.3C53,242.6 52,249.4 52,256C52,262.6 53,269.4 54.9,275.7C56.8,282 59.7,288.2 63.3,293.6C66.8,299 71.2,304 76,308.3C80.7,312.5 86.1,316.1 91.6,318.9C97.1,321.8 103,323.9 108.8,325.4C114.6,326.9 120.6,327.7 126.4,328C132.2,328.3 138,328 143.6,327.3C149.1,326.7 154.6,325.5 159.8,324C165.1,322.5 170.1,320.7 175,318.6C179.9,316.6 184.5,314.2 189,311.7C193.5,309.2 197.8,306.5 201.9,303.7C206.1,300.9 210,297.9 213.9,294.9C217.7,291.9 221.4,288.7 225.1,285.6C228.7,282.4 232.2,279.2 235.7,275.9C239.2,272.6 242.6,269.3 246,266C249.3,262.7 252.7,259.3 256,256C259.3,252.7 262.7,249.3 266,246C269.4,242.7 272.8,239.4 276.3,236.1C279.8,232.8 283.3,229.6 286.9,226.4C290.6,223.3 294.3,220.1 298.1,217.1C302,214.1 305.9,211.1 310.1,208.3C314.2,205.5 318.5,202.8 323,200.3C327.5,197.8 332.1,195.4 337,193.4C341.9,191.3 346.9,189.5 352.2,188C357.4,186.5 362.9,185.3 368.4,184.7C374,184 379.8,183.7 385.6,184C391.4,184.3 397.4,185.1 403.2,186.6C409,188.1 414.9,190.2 420.4,193.1C425.9,195.9 431.3,199.5 436,203.7C440.8,208 445.2,213 448.7,218.4C452.3,223.8 455.2,230 457.1,236.3C459,242.6 460,249.4 460,256C460,262.6 459,269.4 457.1,275.7C455.2,282 452.3,288.2 448.7,293.6C445.2,299 440.8,304 436,308.3C431.3,312.5 425.9,316.1 420.4,318.9C414.9,321.8 409,323.9 403.2,325.4C397.4,326.9 391.4,327.7 385.6,328C379.8,328.3 374,328 368.4,327.3C362.9,326.7 357.4,325.5 352.2,324C346.9,322.5 341.9,320.7 337,318.6C332.1,316.6 327.5,314.2 323,311.7C318.5,309.2 314.2,306.5 310.1,303.7C305.9,300.9 302,297.9 298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256Z"
     private static let mobiusCapPath = "M298.1,294.9C294.3,291.9 290.6,288.7 286.9,285.6C283.3,282.4 279.8,279.2 276.3,275.9C272.8,272.6 269.4,269.3 266,266C262.7,262.7 259.3,259.3 256,256C252.7,252.7 249.3,249.3 246,246C242.6,242.7 239.2,239.4 235.7,236.1C232.2,232.8 228.7,229.6 225.1,226.4C221.4,223.3 217.7,220.1 213.9,217.1"
     private var window: NSWindow!
@@ -32,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         webView = WKWebView(frame: .zero, configuration: config)
+        let savedZoom = UserDefaults.standard.double(forKey: Self.zoomKey)
+        if savedZoom >= Double(Self.minZoom) && savedZoom <= Double(Self.maxZoom) {
+            webView.pageZoom = CGFloat(savedZoom)
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1360, height: 860),
@@ -508,6 +516,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSWorkspace.shared.open(support.appendingPathComponent("Unity"))
     }
 
+    // MARK: Page Zoom
+
+    private func updateZoom(_ newZoom: CGFloat) {
+        let clamped = min(max(newZoom, Self.minZoom), Self.maxZoom)
+        let rounded = (clamped * 100).rounded() / 100
+        webView.pageZoom = rounded
+        UserDefaults.standard.set(Double(rounded), forKey: Self.zoomKey)
+    }
+
+    @objc private func zoomIn() { updateZoom(webView.pageZoom + Self.zoomStep) }
+    @objc private func zoomOut() { updateZoom(webView.pageZoom - Self.zoomStep) }
+    @objc private func resetZoom() { updateZoom(1.0) }
+
     private func buildMenu() {
         let main = NSMenu()
         func submenu(_ title: String, _ items: [NSMenuItem]) {
@@ -546,7 +567,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("粘贴", #selector(NSText.paste(_:)), "v"),
             item("全选", #selector(NSText.selectAll(_:)), "a"),
         ])
-        submenu("显示", [item("重新载入", #selector(reload), "r")])
+        let zoomInEqual = item("放大", #selector(zoomIn), "=")
+        zoomInEqual.isHidden = true
+        submenu("显示", [
+            item("重新载入", #selector(reload), "r"),
+            .separator(),
+            item("实际大小", #selector(resetZoom), "0"),
+            item("放大", #selector(zoomIn), "+"),
+            zoomInEqual,
+            item("缩小", #selector(zoomOut), "-"),
+        ])
         submenu("窗口", [
             item("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("关闭", #selector(NSWindow.performClose(_:)), "w"),
