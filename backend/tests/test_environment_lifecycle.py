@@ -394,3 +394,40 @@ def test_process_start_enforces_c_locale(monkeypatch):
     assert len(calls) == 1
     assert calls[0][0] == ["ps", "-p", "12345", "-o", "lstart="]
     assert calls[0][1].get("LC_ALL") == "C"
+
+
+def _record_popen(monkeypatch, calls, exit_code):
+    class Child:
+        pid = 4242
+        def poll(self): return exit_code
+    def popen(args, **kwargs):
+        calls.append(kwargs)
+        return Child()
+    monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
+
+
+def test_managed_services_never_inherit_the_launching_terminal_stdin(tmp_path, monkeypatch):
+    # Vite exits with code 0 when stdin reaches EOF; detached launches close the caller's stdin.
+    calls = []
+    _record_popen(monkeypatch, calls, exit_code=0)
+    monkeypatch.setattr(supervisor, "setup", lambda *a: "python")
+    monkeypatch.setattr(supervisor, "home", lambda *a: tmp_path)
+    monkeypatch.setattr(supervisor, "choose_ports", lambda *a, **k: (18100, 15174))
+    monkeypatch.setattr(supervisor, "environment", lambda *a, **k: {"YIREN_USE_FAKE_CLI": "true"})
+    monkeypatch.setattr(supervisor, "terminate", lambda _: None)
+    monkeypatch.setattr(supervisor, "process_start", lambda _: "birth")
+    (tmp_path / "frontend").mkdir()
+    with pytest.raises(common.EnvironmentError, match="Service exited"):
+        supervisor.supervise(tmp_path, "development", state=tmp_path / "state", install=False)
+    assert len(calls) == 2
+    assert all(call["stdin"] is subprocess.DEVNULL for call in calls)
+
+
+def test_detached_supervisor_does_not_inherit_the_launching_terminal_stdin(tmp_path, monkeypatch):
+    calls = []
+    _record_popen(monkeypatch, calls, exit_code=None)
+    records = iter([None, {"supervisor_pid": 4242, "status": "running", "frontend_port": 15174, "git_sha": "abcdef1"}])
+    monkeypatch.setattr(supervisor, "read_record", lambda *a, **k: next(records))
+    monkeypatch.setattr(supervisor, "setup", lambda *a: "python")
+    supervisor.start(tmp_path, "development", detach=True, state=tmp_path / "state")
+    assert [call["stdin"] for call in calls] == [subprocess.DEVNULL]
