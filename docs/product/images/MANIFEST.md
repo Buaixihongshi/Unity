@@ -1,0 +1,16 @@
+# 产品文档截图清单
+
+规格见 `../screenshot-playbook.md`：会话页 1280×800，设置页弹窗 1126×680。
+界面改动涉及下表中的“界面位置”时，按对应图号重拍，并更新实拍 SHA 和摘要。
+
+| 图号 | 文件 | 界面位置 | 实拍 SHA | 尺寸 | 摘要（sha256 前 12 位） | 状态 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 0-1 | `0-1-conversation-overview.png` | 会话页：消息流、产物卡片 | ccf91fe | 1280×800 | 9f0f0fdb3646 | 可用 |
+| 0-2 | `0-2-settings-extensions.png` | 设置 → 扩展 | ccf91fe | 1126×680 | 621f92eebf0f | 可用 |
+| 1-1 | `1-1-settings-team-config.png` | 设置 → 团队配置 | ccf91fe | 1126×680 | 235ba4f5b6f0 | 可用 |
+| 1-2 | `1-2-discuss-summary.png` | 会话页：讨论综合稿、待选择面板 | ccf91fe | 1280×800 | cce9d2544300 | 可用 |
+| 1-3a | `1-3a-task-proposal-top.png` | 会话页：任务提议弹窗顶部 | ccf91fe | 1280×800 | 47f78323c065 | 可用 |
+| 1-3b | `1-3b-task-proposal-bottom.png` | 会话页：任务提议弹窗底部 | ccf91fe | 1280×800 | 1746b93da0e9 | 可用 |
+| 1-4 | — | 会话页：超时宿主记录 | — | — | — | 暂缺，等真实超时再补 |
+| 1-5 | `1-5-settings-observability.png` | 设置 → 观测 | ccf91fe | 1126×680 | 43579aa7b32f | 可用 |
+| 1-6 | `1-6-settings-memory.png` | 设置 → 记忆 | ccf91fe | 1126×680 | 0d03e1503ac5 | 可用（路径已打码） |
