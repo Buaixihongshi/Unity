@@ -32,6 +32,41 @@ Unity 就是从那会儿开始做的：把 Codex CLI、Claude Code、Antigravity
 
 默认的 Unity 只做最核心的一件事：伙伴共享对话、记忆和产物，互相接力。讨论、任务和仓库维护是可选扩展，在「设置 → 扩展」里按需开启。
 
+## 和其他项目有什么不同
+
+常被问到：DeepSeek 有了自己的 agent 框架，OpenClaw、Hermes 也能换着接各家模型，Orca 能同时跑一群 coding agent，Unity 还有什么不一样？
+
+一句话：**Unity 不替你挑一个最强的 agent，而是让你已经在用的几家 CLI 在同一个群里各当一个角色。** 讨论时先各自作答，分歧留下来；动手前先等你确认，有风险的改动换一位伙伴审。
+
+### 同样是"一组 AI 一起干活"
+
+| | 它是什么 | 用哪些 AI | 怎么协作 | 记忆 | 在哪用 |
+| --- | --- | --- | --- | --- | --- |
+| **Unity** | 本机运行的多角色工作群 | Codex CLI、Claude Code、Antigravity CLI，自定义 API；每位伙伴单独选连接和模型 | @ 点名、互相接力；`/discuss` 先独立作答再交流，综合稿交回参与者复核；任务先提议，你确认后才开始 | 每位伙伴有本地 Markdown 长期记忆，设置里能看、能改、能忘；会话有短期检查点 | 本机网页、macOS 应用 |
+| [Tobs](https://github.com/BotHarness/DeepSeekBot) | 跑在 DeepSeek Harness 里的 bot 团队插件 | DSH 里配置的模型服务商 | 群聊里需要谁就 @ 谁；大任务委派给单个 Bot，做完交回报告 | 每个 Bot 的记忆是一个 Git 仓库，能翻看、修改、跨电脑同步 | DSH 桌面端；Slack、Discord、飞书、QQ、微信 |
+| [DS Bot](https://github.com/Fei2411/DS-Bot) | DeepSeek Harness 的 bot 插件，也有自带 DSH 的桌面应用 | DeepSeek（经 DSH） | 主 Bot 管理其他 Bot 和群聊；群管理员默认回复、按需叫人；大目标分阶段、按证据验收 | 每个 Bot 有记忆，群聊另有自己的记忆 | 桌面应用、DSH 插件、Docker |
+
+最大的区别在底座：Tobs 和 DS Bot 的每个 Bot 都跑在 DSH 上；Unity 的几位伙伴可以分别是不同厂商的 CLI。
+
+### 相邻的项目
+
+| | 它是什么 | 和 Unity 差在哪 |
+| --- | --- | --- |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | DeepSeek 官方开源 agent 框架，一切皆插件，目前是开发者预览 | 它是造 agent 的底座，Tobs、DS Bot 都建在它上面；Unity 是把现成 CLI 组织起来的协作层，不在一层 |
+| [OpenClaw](https://github.com/openclaw/openclaw) | 跑在自己设备上的个人助手，接 20 多个聊天渠道，模型和 agent harness 可以换 | 它是一个随处找得到的助手，引擎可换；Unity 是几位身份不同的伙伴在群里分工、互相把关 |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | 会自我改进的个人 agent，自己整理记忆、从经验里生成技能，可派生子 agent 并行 | 它围绕一个人越用越懂你；Unity 关注伙伴之间的分工、分歧和交叉审核 |
+| [Orca](https://github.com/stablyai/orca) | 多 coding agent 编排应用：协调 agent 拆活，worker 在各自 worktree 并行，带 diff 审阅和手机端 | 并行写代码、远程和手机端都比 Unity 成熟；Unity 执行还是串行，重心在讨论、确认和换人审 |
+
+### 怎么选
+
+想要一个在聊天软件里随时找得到、越用越懂你的个人助理，OpenClaw 和 Hermes Agent 更成熟；主要写代码，想让几个 agent 并行跑、在手机上盯进度，选 Orca；只用 DeepSeek，想要一队有长期记忆的 bot，可以看看 Tobs 和 DS Bot。
+
+如果你手上已经有好几家的 CLI，想让它们在一个群里讨论、分工、互相把关，每一步做了什么都查得到，可以试试 Unity。这些工具并不冲突，很多可以一起用。
+
+Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没有手机端；任务执行还是串行；没有定时任务；真实 CLI 隔离和自主开发依赖 macOS；自定义 API 只能做文本对话和讨论。
+
+> 以上对比依据各项目 2026 年 11 月的公开 README，它们更新很快，写错了或过时了欢迎提 issue。
+
 ## 项目架构
 
 ```mermaid
