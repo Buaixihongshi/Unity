@@ -6,10 +6,11 @@ from typing import Callable, Optional
 
 from backend.app.adapters import antigravity_config
 from backend.app.adapters.stream_events import StreamEvent, StreamEventType
-from backend.app.adapters.turn_budget import remaining_timeout
+from backend.app.adapters.turn_budget import extend_remaining, remaining_timeout
 
 
 PROGRESS_CHECK_SECONDS = 300
+MIN_EXTENSION_SECONDS = 1.0
 HUB_SERVER_NAMES = {"yiren_hub", antigravity_config.SERVER_NAME}
 HUB_WORK_TOOLS = {"read_context", "read_artifact", "write_artifact", "read_discussion_result"}
 
@@ -73,11 +74,18 @@ class ToolResultDeadline:
                     new_results += 1
                 if not new_results:
                     continue
-                previous = self.deadline
-                self.deadline = min(max(previous, checked_at + self.timeout),
-                                    now + remaining_timeout(float("inf")))
-                if self.deadline == previous:
+                budget_left = remaining_timeout(float("inf"))
+                if budget_left <= 0:
+                    break  # An exhausted shared turn budget is never revived.
+                # The effective deadline is whichever of the two expires first.
+                previous = min(self.deadline, now + budget_left)
+                target = checked_at + self.timeout
+                # Clock drift between wall and monotonic time must not be
+                # reported as a renewal: only record a real move forward.
+                if target - previous < min(MIN_EXTENSION_SECONDS, self.check_interval / 2):
                     continue
+                self.deadline = target
+                extend_remaining(target - now)
                 self.extensions += 1
                 extension = {"extension": self.extensions, "new_tool_results": new_results,
                              "timeout_seconds": self.timeout, "check_interval_seconds": self.check_interval,
