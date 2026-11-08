@@ -59,7 +59,8 @@ def run(args) -> int:
         "questions_sha256": C.sha256_bytes(args.questions.read_bytes()),
         "harness_sha256": C.sha256_bytes(Path(C.__file__).read_bytes()),
         "routing_sha256": C.sha256_bytes(args.routing.read_bytes()) if args.routing else None,
-        "answer_key_opened": False,
+        # What this script did, not an audit of the CLI subprocesses; those are checked per call (valid/invalid_reasons).
+        "answer_key_opened_by_harness": False,
     }
     if args.mode == "real":
         manifest["cli_versions"] = {c: _cli_version(c) for c in ("claude", "codex", "agy")}
@@ -67,6 +68,7 @@ def run(args) -> int:
         manifest["cli_global_instructions_sha256"] = C.global_instructions()
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     writer = C.GameWriter(out)
+    invalid = 0
     for qid in selected:
         q = questions[qid]
         n = len(q["cards"])
@@ -78,9 +80,14 @@ def run(args) -> int:
         for condition in args.condition:
             for game in range(args.games):
                 record = C.run_game(q, game, condition, args.rounds, seats, respond, writer)
-                print(record["game"], [(s["card"], s["pre_pick"], s["final_pick"]) for s in record["seats"]], flush=True)
+                print(record["game"], [(s["card"], s["pre_pick"], s["final_pick"]) for s in record["seats"]],
+                      "" if record["valid"] else f"INVALID: {record['invalid_reason']}", flush=True)
+                invalid += not record["valid"]
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
+    manifest["invalid_games"] = invalid
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+    if invalid:
+        print(f"{invalid} invalid game(s); score leaves them out", file=sys.stderr)
     return 0
 
 

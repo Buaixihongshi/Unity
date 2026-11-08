@@ -12,6 +12,7 @@
 
 - `questions.json`：只放题面、共享材料、私卡和候选项。加载时如果发现 `correct_answer`、`rationale` 这类答案侧字段，直接拒绝。
 - `answer_key.json`：正解、诱饵和出题理由。只有 `run_clueeval.py score` 会读这个文件，跑题阶段不读。
+- 每次调用都必须无工具。三家 CLI 都改成逐条输出事件，`cli_responder` 逐条检查：出现工具事件，或者无法确认没用工具（缺 init/result 事件、退出码非 0、空回复、Antigravity 日志里看不到禁用规则生效），这次调用就记为无效，附上 `invalid_reasons`。这一局随即停下，记录 `valid=false` 和原因后写盘；`score` 不计入，单独列在 `invalid_games` 里。
 - 每次调用都会记录初始上下文里实际找到了哪几张卡（`cards_in_initial_context`）。找到的卡和本席位分到的卡不一致时，CLI 启动前就会报错停下。别人的私卡只能经由讨论记录、在持卡人发过言之后才出现（`cards_in_transcript`）。
 
 ## 协议
@@ -30,5 +31,11 @@
 ## 已知限制
 
 - CLI 会自己加载用户级指令文件，这部分不在我们拼的提示里：Codex 读 `~/.codex/AGENTS.md`，Antigravity 读 `~/.gemini/GEMINI.md`，Claude 读 `~/.claude/CLAUDE.md`。所以“初始上下文只有材料”只对我们构造的那部分提示成立。manifest 会记下这几个文件的摘要（`cli_global_instructions_sha256`），对比不同批次时要先核对摘要是否一致。Codex 的 `project_doc_max_bytes=0` 屏蔽不了全局文件，实测确认过。
-- Codex 在只读沙箱里，技术上仍能读本机文件，包括答案文件。每次调用会记录 Codex 的工具事件（`tool_items`），一旦非空就要人工复查。Antigravity 的 `tool_calls_in_log` 只是在日志里做正则计数，这条规则还没拿实际用到工具的日志验证过。
+- 各家禁用工具的做法（#140，均已用“读当前目录 canary 文件”的探针实测）：
+  - Claude：`--tools ""`，init 事件里工具和 MCP 列表都为空，回合数为 1。
+  - Codex：`-s read-only` 只限制写入，不禁命令；改前实测能执行 `ls` 并读出 canary。现在用 `--disable` 关掉 shell、unified_exec、code mode 等能执行代码或访问外部的功能，并关掉 web_search 和 MCP。关掉 code mode 后，每次调用开头固定有一条 `error` 通知，这一条按原文放行；除此之外，凡是不属于 `agent_message`/`reasoning` 的条目，都判为无效。
+  - Antigravity：没有关闭工具的开关，日常设置还是 `always-proceed`；改前实测会执行 `ls`、`read_file` 读出 canary。现在用 `--settings` 临时改成 `strict`，并拒绝命令、读写文件、MCP、网址和浏览器。实测主代理和它拉起的子代理都被拦下。即使工具被拦，只要出现工具或子代理步骤，这一局照样判无效。
+- 以上是用禁用加事件检测兜底，不是文件系统隔离：答案文件仍在本机磁盘上。CLI 版本升级后，新增的工具未必在禁用清单里；靠的是“没见过的事件一律判无效”来兜底，升级后要先重跑探针。
+- `answer_key_opened_by_harness` 只说明脚本自己跑题时没打开答案文件，不是对 CLI 子进程的访问审计。
+- #140 之前的产物（如 `smoke-real-1`）没有 `valid` 字段，`score` 会全部列为无效。那批 Antigravity 的 `tool_calls_in_log=0` 不能作为没用工具的证据：实测表明，即使真的读了文件，这个正则也计 0。
 - 这里只把首行或 JSON 里的选项解析成 pick，不算排除分和披露率。那部分判分继续由人工确认（见 #129）。

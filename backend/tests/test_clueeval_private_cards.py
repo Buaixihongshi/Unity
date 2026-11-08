@@ -156,3 +156,175 @@ def test_roster_follows_routing_and_seats_four_roles():
     assert [(s.role, s.provider, s.model) for s in seats][-1] == ("role-694a37", "antigravity", "g-low")
     with pytest.raises(ValueError):
         C.resolve_roster({"agents": {"chulan": {"default_provider_id": "claude"}}}, 1)
+
+
+# ---------------------------------------------------------------- #140: tool-free calls fail closed
+# Event shapes below are trimmed from real probe runs (claude 2.x stream-json, codex-cli 0.162 --json, agy 1.5 stream-json).
+
+def _jsonl(*events):
+    return "\n".join(json.dumps(e) for e in events) + "\n"
+
+
+CODEX_NOTICE = {"type": "item.completed", "item": {"id": "item_0", "type": "error",
+                                                   "message": C.CODEX_CODE_MODE_NOTICE + ". Code mode will fail closed"}}
+CODEX_CLEAN = _jsonl({"type": "thread.started"}, CODEX_NOTICE, {"type": "turn.started"},
+                     {"type": "item.completed", "item": {"type": "agent_message", "text": "OK"}},
+                     {"type": "turn.completed", "usage": {}})
+CODEX_TOOL = _jsonl({"type": "thread.started"}, {"type": "turn.started"},
+                    {"type": "item.started", "item": {"type": "command_execution", "command": "ls"}},
+                    {"type": "item.completed", "item": {"type": "command_execution", "command": "ls"}},
+                    {"type": "item.completed", "item": {"type": "agent_message", "text": "TOKEN"}},
+                    {"type": "turn.completed", "usage": {}})
+AGY_LOG = "CLI settings initialized: permissions=&{Allow:[] Deny:[" + " ".join(C.AGY_DENY) + "] Ask:[]}, toolPermission=strict"
+AGY_STEP = {"event": "step_update", "step_update": {"state": "DONE", "step_type": "agent_response"}}
+AGY_RESULT = {"event": "result", "result": {"status": "SUCCESS", "response": "ICU capacity.", "num_turns": 1}}
+AGY_CLEAN = _jsonl({"event": "init", "init": {"tools": ["read_file"]}},
+                   {"event": "step_update", "step_update": {"state": "DONE", "step_type": "user_input"}},
+                   AGY_STEP, AGY_RESULT)
+CLAUDE_INIT = {"type": "system", "subtype": "init", "tools": [], "mcp_servers": []}
+CLAUDE_RESULT = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "result": "OK",
+                 "modelUsage": {"claude-opus-5-5": {}}}
+CLAUDE_CLEAN = _jsonl(CLAUDE_INIT, {"type": "assistant", "message": {"content": [{"type": "thinking"}, {"type": "text"}]}},
+                      CLAUDE_RESULT)
+
+
+class _Proc:
+    def __init__(self, stdout, rc=0):
+        self.stdout, self.returncode, self.stderr = stdout, rc, ""
+
+
+def _fake_cli(monkeypatch, stdout, rc=0, last="answer", log=AGY_LOG):
+    seen = []
+
+    def run(cmd, cwd, **kwargs):
+        seen.append(cmd)
+        if "-o" in cmd and last is not None:
+            Path(cmd[cmd.index("-o") + 1]).write_text(last)
+        if "--log-file" in cmd and log is not None:
+            Path(cmd[cmd.index("--log-file") + 1]).write_text(log)
+        return _Proc(stdout, rc)
+
+    monkeypatch.setattr(C.subprocess, "run", run)
+    return seen
+
+
+def _respond(provider):
+    return C.cli_responder()(C.Seat(0, "r", provider, "m"), "pre", "prompt")
+
+
+def test_codex_command_execution_with_rc0_is_rejected(monkeypatch):
+    # The reproduction from #140: rc=0, a valid last.txt and a command_execution item.
+    _fake_cli(monkeypatch, CODEX_TOOL, last="TOKEN")
+    result = _respond("codex")
+    assert result["valid"] is False and "item command_execution" in result["invalid_reasons"]
+    assert result["meta"]["tool_items"] == ["command_execution"]
+    assert result["meta"]["tool_detail"] == [{"type": "command_execution", "args": '{"command": "ls"}'}]
+
+
+def test_denied_antigravity_tool_call_is_invalid_and_keeps_what_it_tried(monkeypatch):
+    # From a real smoke: a seat called run_command unprompted; the deny rule stopped it.
+    tool = {"step_type": "tool", "tool_name": "run_command", "tool_info": {"name": "run_command",
+            "parameters": {"CommandLine": "ls -la"}}}
+    stdout = _jsonl({"event": "init"}, {"event": "step_update", "step_update": dict(tool, state="ACTIVE")},
+                    {"event": "step_update", "step_update": dict(tool, state="ERROR", tool_info=dict(
+                        tool["tool_info"], error={"message": "Matches user-configured deny rule."}))}, AGY_RESULT)
+    _fake_cli(monkeypatch, stdout)
+    result = _respond("antigravity")
+    assert result["valid"] is False and result["text"] == "ICU capacity."
+    assert result["meta"]["tool_detail"] == [{"step": "tool", "tool": "run_command", "state": "ERROR",
+                                              "args": '{"CommandLine": "ls -la"}',
+                                              "error": "Matches user-configured deny rule."}]
+
+
+@pytest.mark.parametrize("provider,stdout", [("codex", CODEX_CLEAN), ("antigravity", AGY_CLEAN), ("claude", CLAUDE_CLEAN)])
+def test_clean_tool_free_calls_are_valid(monkeypatch, provider, stdout):
+    _fake_cli(monkeypatch, stdout)
+    result = _respond(provider)
+    assert result["valid"] is True and result["invalid_reasons"] == [] and result["text"]
+
+
+@pytest.mark.parametrize("provider,stdout,kwargs,reason", [
+    ("codex", CODEX_CLEAN.replace('"turn.completed"', '"turn.failed"'), {}, "0 completed turns"),
+    ("codex", CODEX_CLEAN, {"last": None}, "no last message file"),
+    ("codex", CODEX_CLEAN.replace(C.CODEX_CODE_MODE_NOTICE, "something else"), {}, "item error"),
+    ("codex", CODEX_CLEAN, {"rc": 1}, "rc 1"),
+    ("codex", "not json", {"last": None}, "no last message file"),
+    ("antigravity", AGY_CLEAN, {"log": None}, "deny rules not confirmed in log"),
+    ("antigravity", AGY_CLEAN, {"log": AGY_LOG.replace("strict", "always-proceed")}, "deny rules not confirmed in log"),
+    ("antigravity", _jsonl({"event": "init"}, {"event": "step_update", "step_update": {
+        "step_type": "tool", "tool_name": "read_file", "state": "ERROR"}}, AGY_RESULT), {}, "step tool:read_file"),
+    ("antigravity", _jsonl({"event": "init"}, {"event": "step_update", "step_update": {
+        "step_type": "subagent", "tool_name": "invoke_subagent"}}, AGY_RESULT), {}, "step subagent:invoke_subagent"),
+    ("antigravity", _jsonl({"event": "init"}, AGY_STEP), {}, "no result event"),
+    ("claude", _jsonl(dict(CLAUDE_INIT, tools=["Read"]), CLAUDE_RESULT), {}, "tools available: 1 tools, 0 mcp servers"),
+    ("claude", _jsonl(CLAUDE_INIT, {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}},
+                      CLAUDE_RESULT), {}, "content block tool_use"),
+    ("claude", _jsonl(CLAUDE_RESULT), {}, "no init event"),
+    ("claude", _jsonl(CLAUDE_INIT, dict(CLAUDE_RESULT, num_turns=2)), {}, "result is_error=False num_turns=2"),
+])
+def test_tool_events_or_unconfirmed_state_fail_closed(monkeypatch, provider, stdout, kwargs, reason):
+    _fake_cli(monkeypatch, stdout, **kwargs)
+    result = _respond(provider)
+    assert result["valid"] is False and reason in result["invalid_reasons"]
+
+
+def test_cli_commands_switch_tools_off():
+    workdir = Path("/tmp/x")
+    claude = C.cli_command(C.Seat(0, "r", "claude", "m"), "p", workdir)
+    assert claude[claude.index("--tools") + 1] == "" and "stream-json" in claude
+    codex = C.cli_command(C.Seat(0, "r", "codex", "m"), "p", workdir)
+    disabled = {codex[i + 1] for i, arg in enumerate(codex) if arg == "--disable"}
+    assert {"shell_tool", "unified_exec", "code_mode_host"} <= disabled and "web_search=disabled" in codex
+    agy = C.cli_command(C.Seat(0, "r", "antigravity", "m"), "p", workdir)
+    settings = json.loads(agy[agy.index("--settings") + 1])
+    assert settings["toolPermission"] == "strict" and {"command(*)", "read_file(*)"} <= set(settings["permissions"]["deny"])
+    assert "--dangerously-skip-permissions" not in agy and "stream-json" in agy
+
+
+def test_invalid_call_stops_the_game_and_score_leaves_it_out(tmp_path):
+    q = QUESTIONS["q2-rootcause"]
+    base = C.fixture_responder(q)
+    calls = []
+
+    def tainted(seat, phase, prompt):
+        calls.append(phase)
+        result = base(seat, phase, prompt)
+        if phase == "discuss" and seat.index == 1:
+            return dict(result, valid=False, invalid_reasons=["item command_execution"])
+        return result
+
+    writer = C.GameWriter(tmp_path)
+    record = C.run_game(q, 0, "private", 2, _fixture_seats(3), tainted, writer)
+    assert record["valid"] is False and "item command_execution" in record["invalid_reason"]
+    assert "final" not in calls and all(s["final_pick"] is None for s in record["seats"])
+    assert "不计分" in (tmp_path / "games" / f"{record['game']}.md").read_text()
+    logged = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    assert logged[-1]["valid"] is False  # the rejected call is kept for audit
+    C.run_game(QUESTIONS["q1-storage"], 0, "private", 1, _fixture_seats(3), C.fixture_responder(QUESTIONS["q1-storage"]),
+               writer)
+    result = C.score(tmp_path, DATA / "answer_key.json")
+    assert [r["game"] for r in result["games"]] == ["q1-storage__private__g0"]
+    assert [g["game"] for g in result["invalid_games"]] == [record["game"]]
+
+
+def test_responder_without_validity_is_treated_as_invalid(tmp_path):
+    q = QUESTIONS["q1-storage"]
+    base = C.fixture_responder(q)
+
+    def legacy(seat, phase, prompt):
+        result = base(seat, phase, prompt)
+        result.pop("valid")
+        return result
+
+    record = C.run_game(q, 0, "private", 1, _fixture_seats(3), legacy, C.GameWriter(tmp_path))
+    assert record["valid"] is False and "validity not reported" in record["invalid_reason"]
+
+
+def test_score_treats_games_without_a_validity_field_as_invalid(tmp_path):
+    _run(tmp_path, "q2-rootcause")
+    path = next((tmp_path / "games").glob("*.json"))
+    game = json.loads(path.read_text())
+    game.pop("valid")
+    path.write_text(json.dumps(game))
+    result = C.score(tmp_path, DATA / "answer_key.json")
+    assert result["games"] == [] and result["invalid_games"][0]["reason"] == "validity not recorded"

@@ -4,6 +4,9 @@ Isolation boundary: running a game only reads questions.json. The answer key (co
 decoy, generator rationale) lives in a separate file that only score() opens, after the run.
 Every call records which cards were actually found in its initial context; a call whose context
 does not contain exactly its own card is refused before any CLI starts.
+
+Calls must be tool-free. A responder marks a call invalid when it sees a tool event or cannot confirm
+there was none; the game stops there, is written with its reasons, and score() leaves it out.
 """
 from __future__ import annotations
 
@@ -27,6 +30,10 @@ DEFAULT_ROSTER = ("chulan", "baobao", "wangye", "role-694a37")
 
 
 class IsolationError(RuntimeError):
+    pass
+
+
+class InvalidCall(RuntimeError):
     pass
 
 
@@ -179,25 +186,125 @@ def fixture_responder(q: dict) -> Responder:
             text = json.dumps({"vote": q["options"][0], "rationale": "fixture"})
         else:
             text = q["answer_format"].format(option=q["options"][0]) + "\n- fixture"
-        return {"text": text, "rc": 0, "seconds": 0.0, "meta": {"fixture": True}}
+        return {"text": text, "rc": 0, "seconds": 0.0, "meta": {"fixture": True}, "valid": True,
+                "invalid_reasons": []}
     return respond
 
 
 _SEMAPHORES = {"claude": threading.Semaphore(3), "codex": threading.Semaphore(3), "antigravity": threading.Semaphore(2)}
 
+# Codex has no "no tools" switch: turn off every feature that can run code or reach outside the prompt.
+# A read-only sandbox alone still lets the model run shell commands that read any local file.
+CODEX_DISABLED_FEATURES = ("shell_tool", "unified_exec", "code_mode_host", "apps", "plugins", "multi_agent",
+                           "browser_use", "computer_use", "in_app_browser", "image_generation", "view_image",
+                           "memories", "hooks", "skill_search", "tool_suggest", "goals", "sleep_tool")
+# Emitted on every call once code_mode_host is off; the only non-message item a clean call may carry.
+CODEX_CODE_MODE_NOTICE = "Code Mode is unavailable because code-mode host is disabled"
+# Antigravity cannot drop its tools, so every tool class is denied. The daily settings may say
+# always-proceed; --settings overrides that for this call only.
+AGY_DENY = ("command(*)", "read_file(*)", "read_file(/)", "write_file(*)", "mcp(*)", "read_url(*)",
+            "execute_url(*)", "browser(*)")
+AGY_SETTINGS = json.dumps({"toolPermission": "strict", "permissions": {"deny": list(AGY_DENY)}})
+
 
 def cli_command(seat: Seat, prompt: str, workdir: Path) -> List[str]:
-    """Stateless, tool-free calls in an empty temp dir; model comes from the daily route."""
+    """Stateless, tool-free calls in an empty temp dir; model comes from the daily route.
+
+    Each CLI streams its events so inspect_* can prove no tool ran; anything it cannot prove fails closed.
+    """
     if seat.provider == "claude":
-        return ["claude", "-p", "--model", seat.model, "--output-format", "json", "--tools", "",
+        return ["claude", "-p", "--model", seat.model, "--output-format", "stream-json", "--verbose", "--tools", "",
                 "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "", prompt]
     if seat.provider == "codex":
+        disabled = [arg for feature in CODEX_DISABLED_FEATURES for arg in ("--disable", feature)]
         return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-m", seat.model,
+                *disabled, "-c", "web_search=disabled", "-c", "mcp_servers={}",
                 "--json", "-o", str(workdir / "last.txt"), prompt]
     if seat.provider == "antigravity":
         return ["agy", "--model", seat.model, "--new-project", "--disable-slash-commands",
-                "--output-format", "json", "--log-file", str(workdir / "agy.log"), "-p=" + prompt]
+                "--output-format", "stream-json", "--settings", AGY_SETTINGS,
+                "--log-file", str(workdir / "agy.log"), "-p=" + prompt]
     raise ValueError(f"unsupported provider {seat.provider}")
+
+
+def _events(stdout: str) -> List[dict]:
+    return [json.loads(line) for line in stdout.splitlines() if line.strip().startswith("{")]
+
+
+def inspect_claude(stdout: str):
+    """(text, meta, violations) from claude stream-json; a clean call has no tools and one turn."""
+    events = _events(stdout)
+    init = next((e for e in events if e.get("type") == "system" and e.get("subtype") == "init"), None)
+    result = next((e for e in events if e.get("type") == "result"), None)
+    violations = []
+    if init is None:
+        violations.append("no init event")
+    elif init.get("tools") != [] or init.get("mcp_servers") != []:
+        violations.append(f"tools available: {len(init.get('tools') or [])} tools, "
+                          f"{len(init.get('mcp_servers') or [])} mcp servers")
+    blocks = [b.get("type") for e in events if e.get("type") == "assistant"
+              for b in (e.get("message") or {}).get("content") or []]
+    violations += [f"content block {t}" for t in blocks if t not in ("text", "thinking", "redacted_thinking")]
+    if result is None:
+        violations.append("no result event")
+        return None, {}, violations
+    if result.get("is_error") or result.get("num_turns") != 1:
+        violations.append(f"result is_error={result.get('is_error')} num_turns={result.get('num_turns')}")
+    meta = {"model_usage": list(result.get("modelUsage") or {}), "num_turns": result.get("num_turns")}
+    return result.get("result"), meta, violations
+
+
+def inspect_codex(stdout: str, last_text: Optional[str]):
+    events = _events(stdout)
+    items = [e.get("item") or {} for e in events if e.get("type") == "item.completed"]
+    started = [e.get("item") or {} for e in events if e.get("type") == "item.started"]
+    violations = []
+    for item in items + started:
+        kind = item.get("type")
+        if kind in ("agent_message", "reasoning"):
+            continue
+        if kind == "error" and str(item.get("message", "")).startswith(CODEX_CODE_MODE_NOTICE):
+            continue
+        violations.append(f"item {kind}")
+    detail = [{"type": i.get("type"), "args": json.dumps({k: v for k, v in i.items() if k not in ("id", "type", "text")},
+                                                          ensure_ascii=False)[:200]}
+              for i in items if i.get("type") not in ("agent_message", "reasoning", "error")]
+    turns = sum(e.get("type") == "turn.completed" for e in events)
+    if turns != 1:
+        violations.append(f"{turns} completed turns")
+    if last_text is None:
+        violations.append("no last message file")
+    meta = {"tool_items": sorted({v[5:] for v in violations if v.startswith("item ")}), "tool_detail": detail}
+    return last_text, meta, violations
+
+
+def inspect_antigravity(stdout: str, log_text: Optional[str]):
+    events = _events(stdout)
+    steps = [e.get("step_update") or {} for e in events if e.get("event") == "step_update"]
+    result = next((e.get("result") or {} for e in events if e.get("event") == "result"), None)
+    violations = []
+    if not any(e.get("event") == "init" for e in events):
+        violations.append("no init event")
+    detail = []
+    for step in steps:
+        if step.get("tool_name") or step.get("step_type") not in ("user_input", "agent_response"):
+            violations.append(f"step {step.get('step_type')}:{step.get('tool_name')}")
+            if step.get("state") != "ACTIVE":  # the finished step repeats the call with its outcome
+                info = step.get("tool_info") or step.get("subagent_info") or {}
+                detail.append({"step": step.get("step_type"), "tool": step.get("tool_name"), "state": step.get("state"),
+                               "args": json.dumps(info.get("parameters", info), ensure_ascii=False)[:200],
+                               "error": ((info.get("error") or {}).get("message") or "")[:200]})
+    # The deny rules only count if the CLI says it loaded them.
+    if not log_text or "toolPermission=strict" not in log_text or "Deny:[" + " ".join(AGY_DENY) + "]" not in log_text:
+        violations.append("deny rules not confirmed in log")
+    if result is None:
+        violations.append("no result event")
+        return None, {}, violations
+    if result.get("status") != "SUCCESS":
+        violations.append(f"status {result.get('status')}")
+    meta = {"tool_steps": sorted({v[5:] for v in violations if v.startswith("step ")}), "tool_detail": detail,
+            "num_turns": result.get("num_turns")}
+    return result.get("response"), meta, violations
 
 
 def cli_responder(timeout: int = 600) -> Responder:
@@ -208,26 +315,26 @@ def cli_responder(timeout: int = 600) -> Responder:
             proc = subprocess.run(cli_command(seat, prompt, workdir), cwd=workdir, capture_output=True,
                                   text=True, stdin=subprocess.DEVNULL, timeout=timeout)
             seconds = round(time.time() - started, 1)
-            text, meta = None, {}
+            text, meta, violations = None, {}, []
             try:
                 if seat.provider == "claude":
-                    out = json.loads(proc.stdout)
-                    text = out.get("result")
-                    meta = {"model_usage": list(out.get("modelUsage", {})), "num_turns": out.get("num_turns")}
+                    text, meta, violations = inspect_claude(proc.stdout)
                 elif seat.provider == "codex":
-                    text = (workdir / "last.txt").read_text()
-                    events = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
-                    items = [e.get("item", {}).get("type") for e in events if e.get("type") == "item.completed"]
-                    meta = {"tool_items": [t for t in items if t not in ("agent_message", "reasoning")]}
+                    last = workdir / "last.txt"
+                    text, meta, violations = inspect_codex(proc.stdout, last.read_text() if last.exists() else None)
                 else:
-                    text = json.loads(proc.stdout).get("response")
                     log = workdir / "agy.log"
-                    meta = {"tool_calls_in_log": len(re.findall(r"tool[_ ]?call", log.read_text(errors="replace"), re.I))
-                            if log.exists() else None}
-            except (ValueError, OSError, AttributeError) as exc:
+                    text, meta, violations = inspect_antigravity(
+                        proc.stdout, log.read_text(errors="replace") if log.exists() else None)
+            except (ValueError, OSError, AttributeError, TypeError) as exc:
                 meta["parse_error"] = type(exc).__name__
+                violations.append(f"unparseable output: {type(exc).__name__}")
+            if proc.returncode != 0:
+                violations.append(f"rc {proc.returncode}")
+            if not text:
+                violations.append("empty response")
             return {"text": text, "rc": proc.returncode, "seconds": seconds, "meta": meta,
-                    "stderr_tail": proc.stderr[-600:]}
+                    "valid": not violations, "invalid_reasons": violations, "stderr_tail": proc.stderr[-600:]}
     return respond
 
 
@@ -294,28 +401,42 @@ def run_game(q: dict, game: int, condition: str, rounds: int, seats: List[Seat],
                      "cards_in_transcript": cards_in(q, prompt[len(contexts[seat.index]):]),
                      "context_sha256": sha256_bytes(contexts[seat.index].encode()),
                      "prompt": prompt, **result, "pick": parse_pick(q, result["text"]) if phase != "discuss" else None})
+        if result.get("valid") is not True:
+            raise InvalidCall(f"seat {seat.index + 1} {phase} r{round_no}: "
+                              + "; ".join(result.get("invalid_reasons") or ["validity not reported"]))
         return result
 
     def everyone(phase: str) -> List[dict]:
         with ThreadPoolExecutor(n) as pool:
             return list(pool.map(lambda s: call(s, phase), seats))
 
-    pre = everyone("pre")
     start = game % n
-    for round_no in range(1, rounds + 1):
-        for offset in range(n):
-            seat = seats[(start + offset) % n]
-            result = call(seat, "discuss", round_no)
-            transcript.append({"round": round_no, "seat": seat.index, "text": result["text"] or ""})
-    final = everyone("final")
+    pre: List[dict] = []
+    final: List[dict] = []
+    invalid = None
+    try:
+        pre = everyone("pre")
+        for round_no in range(1, rounds + 1):
+            for offset in range(n):
+                seat = seats[(start + offset) % n]
+                result = call(seat, "discuss", round_no)
+                transcript.append({"round": round_no, "seat": seat.index, "text": result["text"] or ""})
+        final = everyone("final")
+    except InvalidCall as exc:
+        invalid = str(exc)
+
+    def pick(results: List[dict], i: int) -> Optional[str]:
+        return parse_pick(q, results[i]["text"]) if results else None
+
     record = {
         "game": gid, "question": q["id"], "condition": condition, "game_index": game, "rounds": rounds,
+        "valid": invalid is None, "invalid_reason": invalid,
         "speaking_order": [(start + o) % n + 1 for o in range(n)],
         "seats": [{"seat": s.index + 1, "role": s.role, "provider": s.provider, "model": s.model,
                    "card": cards[s.index]["id"] if cards[s.index] else None,
                    "cards_in_initial_context": received[s.index],
-                   "pre_pick": parse_pick(q, pre[s.index]["text"]), "final_pick": parse_pick(q, final[s.index]["text"]),
-                   "rc": [pre[s.index]["rc"], final[s.index]["rc"]]} for s in seats],
+                   "pre_pick": pick(pre, s.index), "final_pick": pick(final, s.index),
+                   "rc": [r[s.index]["rc"] if r else None for r in (pre, final)]} for s in seats],
         "transcript": transcript,
     }
     games = writer.out / "games"
@@ -326,7 +447,10 @@ def run_game(q: dict, game: int, condition: str, rounds: int, seats: List[Seat],
 
 
 def _markdown(q: dict, record: dict) -> str:
-    lines = [f"# {record['game']}", "", "| 席位 | 角色 | 模型 | 私卡 | 讨论前 | 讨论后 |", "|---|---|---|---|---|---|"]
+    lines = [f"# {record['game']}", ""]
+    if not record["valid"]:
+        lines += [f"> **无效局，不计分**：{record['invalid_reason']}", ""]
+    lines += ["| 席位 | 角色 | 模型 | 私卡 | 讨论前 | 讨论后 |", "|---|---|---|---|---|---|"]
     for s in record["seats"]:
         lines.append(f"| {s['seat']} | {s['role']} | {s['provider']}/{s['model']} | {s['card'] or '—'} "
                      f"| {s['pre_pick']} | {s['final_pick']} |")
@@ -340,9 +464,12 @@ def _markdown(q: dict, record: dict) -> str:
 
 def score(out: Path, answer_key_path: Path) -> dict:
     key = json.loads(Path(answer_key_path).read_text())["answers"]
-    rows = []
+    rows, invalid = [], []
     for path in sorted((Path(out) / "games").glob("*.json")):
         game = json.loads(path.read_text())
+        if game.get("valid") is not True:
+            invalid.append({"game": game["game"], "reason": game.get("invalid_reason") or "validity not recorded"})
+            continue
         answer = key[game["question"]]
         picks = [s["final_pick"] for s in game["seats"]]
         majority, votes = Counter(picks).most_common(1)[0] if picks else (None, 0)
@@ -351,6 +478,7 @@ def score(out: Path, answer_key_path: Path) -> dict:
                      "final_correct": sum(p == answer["correct"] for p in picks), "seats": len(picks),
                      "majority": majority if votes * 2 > len(picks) else None,
                      "unanimous": len(set(picks)) == 1, "unparsed_final": picks.count(None)})
-    result = {"answer_key_sha256": sha256_bytes(Path(answer_key_path).read_bytes()), "games": rows}
+    result = {"answer_key_sha256": sha256_bytes(Path(answer_key_path).read_bytes()), "games": rows,
+              "invalid_games": invalid}
     (Path(out) / "score.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
     return result
