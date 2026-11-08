@@ -1,0 +1,129 @@
+{
+ "version": 1,
+ "questions": [
+  {
+   "id": "q1-storage",
+   "lang": "zh",
+   "origin": {
+    "source": "unity clueeval solo-v4（第二轮单人筛选通过版）"
+   },
+   "head": "你是负责人，根据以下材料做决定。只依据材料推理，不要调用工具。\n\n",
+   "stem": "【题目】Unity 要给“任务事件归档”选存储方案，候选「青鸟」和「石塔」。必须二选一，不能写“无法确定”；证据不足时选更可能的一个并说明理由。第一行写“结论：青鸟”或“结论：石塔”，下面列依据，并引用材料里的编号。",
+   "shared": "【共享材料】\n- 需求：写入 p99 < 50ms；预算上限 ¥8,000/月；当前事件保留 30 天。\n- 平台组对比表：\n  - 青鸟：当前配置月成本 ¥3,200，p99 写入 8ms，团队已有 2 个服务在用，运维熟悉。\n  - 石塔：当前配置月成本 ¥5,800，p99 写入 25ms，团队没用过，接入约 1 周。\n  - 两者都支持按需配置保留期。\n  - 平台组估算：存储费在总成本里占比很小，调整保留期对月成本的影响可忽略。\n- 平台组建议：“两者都满足要求，青鸟更便宜也更熟，建议青鸟。”",
+   "cards": [
+    {
+     "id": "LEGAL-4417",
+     "text": "- 法务工单 LEGAL-4417：任务事件被认定为审计记录，从下季度起保留期不少于 180 天。"
+    },
+    {
+     "id": "QT-0613",
+     "text": "- 平台组报价单 QT-0613：青鸟按保留时长阶梯计费，30 天以内 ¥3,200/月，之后每多 30 天加 ¥2,100/月。"
+    },
+    {
+     "id": "QT-0614",
+     "text": "- 平台组报价单 QT-0614：石塔是固定套餐，保留 1–365 天都是 ¥5,800/月。"
+    }
+   ],
+   "options": [
+    "青鸟",
+    "石塔"
+   ],
+   "answer_format": "结论：{option}",
+   "answer_pattern": "结论\\s*[:：]\\s*\\**\\s*(青鸟|石塔)",
+   "tell_private_exists": true
+  },
+  {
+   "id": "q2-rootcause",
+   "lang": "zh",
+   "origin": {
+    "source": "unity clueeval solo-v4（第二轮单人筛选通过版）"
+   },
+   "head": "你是负责人，根据以下材料做决定。只依据材料推理，不要调用工具。\n\n",
+   "stem": "【题目】周三下午，聊天室有用户反馈“消息发出去后一直转圈”。当天有两次变更，判断根因是哪一次。必须二选一，不能写“无法确定”；证据不足时选更可能的一个并说明理由。第一行写“根因：<变更编号>”，下面列依据，并引用材料里的编号。",
+   "shared": "【共享材料】\n- 当天变更：\n  - 13:52 网关配置变更 CHG-7730（安全加固）；\n  - 14:05 消息服务发布 v2.8.0，发布单 RL-5512。\n  - 两次变更都按区域分批推送，具体推到哪些区域见各自的记录。\n- 14:10 起陆续有转圈反馈。\n- 监控：消息服务 p99 延迟从 120ms 涨到 900ms；网关 5xx 错误率 0.02%，没有变化。\n- 值班初判：“时间对得上，消息服务延迟也涨了，多半是 v2.8.0。”",
+   "cards": [
+    {
+     "id": "DEP-2231",
+     "text": "- 部署记录 DEP-2231：RL-5512 是灰度发布，只推到了华北节点。"
+    },
+    {
+     "id": "CFG-0418",
+     "text": "- 变更详情 CFG-0418：CHG-7730 只改了华东网关，调整了连接保活参数。"
+    },
+    {
+     "id": "FB-0925",
+     "text": "- 反馈汇总 FB-0925：转圈的反馈全部来自华东用户，其他区域没有收到同类反馈。"
+    }
+   ],
+   "options": [
+    "CHG-7730",
+    "RL-5512"
+   ],
+   "answer_format": "根因：{option}",
+   "aliases": {
+    "v2.8.0": "RL-5512"
+   },
+   "answer_pattern": "根因\\s*[:：]\\s*\\**\\s*(CHG-7730|RL-5512|v2\\.8\\.0)",
+   "tell_private_exists": true
+  },
+  {
+   "id": "hb-009-critical_hospital_transfer",
+   "lang": "en",
+   "origin": {
+    "dataset": "YuxuanLi1225/HiddenBench",
+    "license": "MIT",
+    "revision": "1e3c25b1fd798c6717f4df0463edd3825c8e37f9",
+    "file": "benchmark.json",
+    "file_sha256": "2815afffca4e470d1dfbc81e625160447df1109ce371968181c9e1e6b90443a3",
+    "item_id": 9,
+    "item_sha256": "355f7f4ef016685a4798c0dc6a29ba54a1f4ed5234e056ac82e6dc3afa823a4b",
+    "distribution": "arXiv:2505.11556v4 §3.1：共享材料全员可见，hidden_information 每人恰好一条；席位数 = hidden 条数；不告知他人材料不同"
+   },
+   "original": {
+    "id": 9,
+    "name": "critical_hospital_transfer",
+    "description": "You are on the hospital staff of a rural clinic. A young patient has collapsed with symptoms of a rare but treatable illness. The patient needs to be transferred immediately to a hospital with advanced ICU facilities. There are three hospitals within reach: Hospital A (north), Hospital B (east), and Hospital C (south). You have a single ambulance, and time is critical. Weather conditions are poor (intense rain), some roads may be blocked, and you have no radio contact with the hospitals. Each of you, as staff, have partial updates from local contacts, but you must pool your information to choose which hospital to send the ambulance to. Pick wrong, and the patient may not make it.",
+    "shared_information": [
+     "The main road to Hospital B has been recently repaired and is the most commonly used route. Hospital B is known for its large ICU and currently has at least one doctor on emergency shift.",
+     "Hospital A has a good reputation but is smaller and sometimes lacks staff at night. The northern mountain pass leading to Hospital A can become hazardous after heavy rain.",
+     "Hospital C is the oldest hospital and has a history of equipment failures; it’s reached by a secondary road that sometimes floods. However, its ICU was upgraded last year and their ambulance often helps transfer patients."
+    ],
+    "hidden_information": [
+     "Hospital C's recent ICU upgrade is incomplete: the oxygen supply system failed last night, and they have posted an urgent request for repairs—no critical care available until fixed.",
+     "A police alert reported a landslide blocking the last stretch of the main road to Hospital B this morning—traffic is completely halted for at least 24 hours.",
+     "The northern mountain pass to Hospital A has been cleared and is confirmed safe for ambulance travel as of an hour ago.",
+     "Hospital B's emergency shift doctor is dealing with a multi-patient accident, and the hospital is temporarily out of critical care beds."
+    ],
+    "possible_answers": [
+     "Hospital A",
+     "Hospital B",
+     "Hospital C"
+    ]
+   },
+   "cards": [
+    {
+     "id": "H1",
+     "text": "Hospital C's recent ICU upgrade is incomplete: the oxygen supply system failed last night, and they have posted an urgent request for repairs—no critical care available until fixed."
+    },
+    {
+     "id": "H2",
+     "text": "A police alert reported a landslide blocking the last stretch of the main road to Hospital B this morning—traffic is completely halted for at least 24 hours."
+    },
+    {
+     "id": "H3",
+     "text": "The northern mountain pass to Hospital A has been cleared and is confirmed safe for ambulance travel as of an hour ago."
+    },
+    {
+     "id": "H4",
+     "text": "Hospital B's emergency shift doctor is dealing with a multi-patient accident, and the hospital is temporarily out of critical care beds."
+    }
+   ],
+   "options": [
+    "Hospital A",
+    "Hospital B",
+    "Hospital C"
+   ],
+   "tell_private_exists": false
+  }
+ ]
+}

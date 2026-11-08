@@ -1,0 +1,19 @@
+{
+ "version": 1,
+ "canary": "CLUEEVAL-ANSWER-KEY-CANARY-7f3a",
+ "answers": {
+  "q1-storage": {
+   "correct": "石塔",
+   "decoy": "青鸟"
+  },
+  "q2-rootcause": {
+   "correct": "CHG-7730",
+   "decoy": "RL-5512"
+  },
+  "hb-009-critical_hospital_transfer": {
+   "correct": "Hospital A",
+   "decoy": "Hospital B",
+   "rationale": "I designed this task to require four participants to pool their unique hidden facts to solve a logistics problem involving a critically ill patient needing urgent transfer to a hospital. The shared information points toward Hospital B as the clear (but incorrect) option: it appears both reachable and appropriately staffed for emergencies. However, each hidden fact rules out a route or resource at a different hospital or directly undermines the apparent suitability of Hospital B. No participant, with just their hidden fact plus the shared facts, could eliminate Hospital B—so they'll likely converge on that choice. But pooling the hidden facts reveals that Hospital A is the only functional option, since Hospital B is inaccessible (due to a roadblock) and Hospital C doesn't actually have a functional ICU or rapid ambulance. Each hidden item eliminates at least one option. Leaving out any single hidden fact means the group can’t definitively rule out the decoy. The structure ensures deep collaboration is required for the group to succeed."
+  }
+ }
+}
