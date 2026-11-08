@@ -12,6 +12,7 @@ already fix their effort (`-low`/`-high` variants) or reject `--effort`, so they
 carry an empty list; only its default or a hand-typed base model takes one.
 """
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -30,6 +31,10 @@ _lock = threading.Lock()
 class CatalogError(Exception):
     pass
 
+
+# Antigravity names a model's fixed effort as its suffix (`gemini-3.8-flash-high`);
+# such a model rejects `--effort` even when no listing has been fetched yet.
+_FIXED_EFFORT_SUFFIX = re.compile(r'-(?:minimal|low|medium|high|xhigh|max)$')
 
 # provider id -> {"models": [(id, label)]} or {"args": [...], "format": parser name};
 # "fixed_effort" marks CLIs whose listed models cannot take a separate effort.
@@ -147,3 +152,17 @@ def cli_catalog(provider, *, scope='', refresh=False):
     with _lock:
         _cache[key] = result
     return dict(result)
+
+
+def model_efforts(provider, model, *, scope=''):
+    """Effort levels a known model accepts, or None when its capability is unknown.
+
+    Unknown covers hand-typed models, CLIs without a listing and failed listings;
+    callers then fall back to the levels the CLI accepts in general.
+    """
+    if provider.id == 'antigravity' and _FIXED_EFFORT_SUFFIX.search(model):
+        return []
+    if provider.id not in CATALOG_SPECS:
+        return None
+    listed = next((m for m in cli_catalog(provider, scope=scope)['models'] if m['id'] == model), None)
+    return None if listed is None else listed.get('efforts')

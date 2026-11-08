@@ -564,3 +564,13 @@ it("locks the effort for a model that fixes its own and keeps it adjustable for 
     provider_efforts: {},
   });
 });
+
+it("locks the effort for a suffixed antigravity model before its listing arrives (#132)", async () => {
+  vi.mocked(fetchConnectionModels).mockImplementation(() => new Promise(() => {}));
+  const view: HubSettingsView = { ...baseView, providers: effortProviders, agents: [{ ...baseView.agents[0], fallback_provider_ids: { value: [], source: "user" },
+    provider_models: { value: { antigravity: "gemini-3.8-flash-high" }, source: "user" } }] };
+  render(<SettingsModal view={view} onSave={vi.fn()} onClose={vi.fn()} />);
+  const effort = await screen.findByRole("combobox", { name: "王也 antigravity 推理强度" });
+  expect(effort).toBeDisabled();
+  expect(effort).toHaveDisplayValue("强度：不可调");
+});

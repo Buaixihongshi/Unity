@@ -291,6 +291,18 @@ def build_router(settings: Settings) -> APIRouter:
     def get_hub_settings():
         return _build_view()
 
+    def _model_effort_problem(pid: str, model: str, effort: str) -> Optional[str]:
+        """Check an effort against the model it will run with; an unlisted model keeps the CLI's levels."""
+        problem = _invalid_effort(pid, effort)
+        if problem or not model:
+            return problem
+        from backend.app.adapters.cli_catalog import model_efforts
+        provider = next((p for p in load_cli_providers(settings.config_dir) if p.id == pid), None)
+        levels = model_efforts(provider, model, scope=str(settings.config_dir)) if provider else None
+        if levels is not None and effort not in levels:
+            return f"模型 {model} 不支持推理强度 {effort}" if levels else f"模型 {model} 已固定推理强度，不能再单独设置"
+        return None
+
     def _validate_route(default: str, fallbacks: List[str], models: Dict[str, str], efforts: Dict[str, str],
                         connections: dict) -> None:
         valid_ids = _committed_provider_ids() | set(connections)
@@ -309,7 +321,7 @@ def build_router(settings: Settings) -> APIRouter:
         for pid, effort in efforts.items():
             if pid not in (default, *fallbacks):
                 raise _bad_request(f"该连接不在角色路由中：{pid}")
-            problem = _invalid_effort(pid, effort)
+            problem = _model_effort_problem(pid, models.get(pid, ""), effort)
             if problem:
                 raise _bad_request(problem)
         for pid in (default, *fallbacks):
@@ -515,6 +527,12 @@ def build_router(settings: Settings) -> APIRouter:
             primary = override.get("default_provider_id", agent.default_provider_id)
             fallbacks = override.get("fallback_provider_ids", agent.fallback_provider_ids)
             models = override.get("provider_models", agent.provider_models)
+            if patch.agents and agent.id in patch.agents:
+                # A patch may change only the model or only the effort, so check the merged pair.
+                for pid, effort in (override.get("provider_efforts", agent.provider_efforts) or {}).items():
+                    problem = _model_effort_problem(pid, models.get(pid, ""), effort) if effort else None
+                    if problem:
+                        raise HTTPException(status_code=400, detail=problem)
             for pid in [primary, *fallbacks]:
                 if pid.startswith("api-") and pid not in valid_ids:
                     raise HTTPException(status_code=400, detail="connection is still referenced by an agent")

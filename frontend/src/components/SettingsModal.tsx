@@ -21,7 +21,7 @@ import { roleToneIndex } from "../lib/personaColors";
 import { ObservabilityOverview } from "./ObservabilityOverview";
 import { MemoryPanel } from "./MemoryPanel";
 import { RoleEditor, type RoleRouteOption } from "./RoleEditor";
-import { EffortSelect, effortAfterModelChange, effortChoices } from "./EffortSelect";
+import { EffortSelect, effortAfterModelChange, effortChoices, hasFixedEffort } from "./EffortSelect";
 import {
   createCustomAgent,
   deleteCustomAgent,
@@ -793,6 +793,7 @@ export function SettingsModal({
   }
 
   function effortChoicesFor(providerId: string, model: string): string[] {
+    if (hasFixedEffort(providerId, model)) return [];
     const levels = view.providers.find((provider) => provider.id === providerId)?.efforts ?? [];
     return effortChoices(levels, catalogs[providerId], model);
   }

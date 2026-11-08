@@ -133,3 +133,72 @@ def test_antigravity_listed_models_fix_their_own_effort(monkeypatch):
     result = cli_catalog.cli_catalog(CLIProvider(id='antigravity', label='Antigravity', command='agy'))
     assert [m['efforts'] for m in result['models']] == [[], []]
     cli_catalog._cache.clear()
+
+
+def _list_models(monkeypatch, stdout):
+    cli_catalog._cache.clear()
+    monkeypatch.setattr(cli_catalog.shutil, 'which', lambda command: '/usr/bin/' + command)
+    monkeypatch.setattr(cli_catalog.subprocess, 'run', lambda *a, **kw: __import__('subprocess').CompletedProcess(
+        [], 0, stdout=stdout))
+
+
+def _put_agent(client, agent_id, override):
+    return client.put('/api/hub/settings', json={'agents': {agent_id: override}})
+
+
+@pytest.mark.parametrize('first, second', [
+    ({}, {'provider_models': {'antigravity': 'gemini-3.8-flash-high'}, 'provider_efforts': {'antigravity': 'low'}}),
+    ({'provider_efforts': {'antigravity': 'low'}}, {'provider_models': {'antigravity': 'gemini-3.8-flash-high'}}),
+    ({'provider_models': {'antigravity': 'gemini-3.8-flash-high'}}, {'provider_efforts': {'antigravity': 'low'}}),
+])
+def test_settings_api_rejects_effort_on_model_with_fixed_effort(temp_settings, first, second):
+    # Issue #132: agy rejects `--model gemini-3.8-flash-high --effort low`; the
+    # merged model/effort pair is checked even when the model listing is not loaded.
+    cli_catalog._cache.clear()
+    client = TestClient(create_app(temp_settings))
+    if first:
+        assert _put_agent(client, 'wangye', first).status_code == 200
+    response = _put_agent(client, 'wangye', second)
+    assert response.status_code == 400, response.text
+    assert '已固定推理强度' in response.json()['detail']
+    view = next(a for a in client.get('/api/hub/settings').json()['agents'] if a['id'] == 'wangye')
+    saved = (view['provider_models']['value'].get('antigravity'), view['provider_efforts']['value'].get('antigravity'))
+    assert saved != ('gemini-3.8-flash-high', 'low')
+
+
+def test_settings_api_narrows_effort_to_listed_model(temp_settings, monkeypatch):
+    _list_models(monkeypatch, json.dumps({'models': [
+        {'slug': 'gpt-5.5', 'visibility': 'list', 'supported_reasoning_levels': [{'effort': 'low'}, {'effort': 'xhigh'}]},
+    ]}).encode())
+    client = TestClient(create_app(temp_settings))
+    rejected = _put_agent(client, 'wangye', {'provider_models': {'codex': 'gpt-5.5'}, 'provider_efforts': {'codex': 'ultra'}})
+    assert rejected.status_code == 400
+    assert '不支持推理强度 ultra' in rejected.json()['detail']
+    accepted = _put_agent(client, 'wangye', {'provider_models': {'codex': 'gpt-5.5'}, 'provider_efforts': {'codex': 'xhigh'}})
+    assert accepted.status_code == 200, accepted.text
+    # A hand-typed model the listing does not know keeps the CLI's own levels.
+    unknown = _put_agent(client, 'wangye', {'provider_models': {'codex': 'gpt-next'}, 'provider_efforts': {'codex': 'ultra'}})
+    assert unknown.status_code == 200, unknown.text
+    cli_catalog._cache.clear()
+
+
+def test_settings_api_rejects_effort_on_listed_antigravity_model(temp_settings, monkeypatch):
+    _list_models(monkeypatch, b'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n')
+    client = TestClient(create_app(temp_settings))
+    response = _put_agent(client, 'wangye', {'provider_models': {'antigravity': 'claude-sonnet-4-6'},
+                                             'provider_efforts': {'antigravity': 'high'}})
+    assert response.status_code == 400
+    base = _put_agent(client, 'wangye', {'provider_models': {'antigravity': 'gemini-3.8-flash'},
+                                         'provider_efforts': {'antigravity': 'high'}})
+    assert base.status_code == 200, base.text
+    cli_catalog._cache.clear()
+
+
+def test_custom_role_rejects_effort_on_model_with_fixed_effort(temp_settings):
+    cli_catalog._cache.clear()
+    client = TestClient(create_app(temp_settings))
+    role = {'display_name': '陆玲珑', 'role': '测试', 'persona': '细致', 'default_provider_id': 'antigravity',
+            'provider_models': {'antigravity': 'gemini-3.8-flash-high'}, 'provider_efforts': {'antigravity': 'low'}}
+    response = client.post('/api/hub/agents', json=role)
+    assert response.status_code == 400, response.text
+    assert '已固定推理强度' in response.json()['detail']

@@ -30,6 +30,15 @@ export function effortChoices(
   return levels;
 }
 
+// Antigravity names a model's fixed effort as its suffix and then rejects
+// --effort; this holds before the model listing arrives (issue #132).
+const FIXED_EFFORT_SUFFIX = /-(?:minimal|low|medium|high|xhigh|max)$/;
+
+/** Whether a model already fixes its own effort, so no separate one can be set. */
+export function hasFixedEffort(providerId: string, model: string): boolean {
+  return providerId === "antigravity" && FIXED_EFFORT_SUFFIX.test(model);
+}
+
 /** Keep an effort only while the newly chosen model still supports it. */
 export function effortAfterModelChange(effort: string, choices: string[]): string {
   return effort && !choices.includes(effort) ? "" : effort;
