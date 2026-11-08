@@ -21,6 +21,14 @@ from backend.app.storage import api_connections
 _settings_write_lock = threading.RLock()
 
 
+class _ListingNeeded(Exception):
+    """Validation needs a CLI model listing that this request has not fetched yet."""
+
+    def __init__(self, provider_id: str):
+        super().__init__(provider_id)
+        self.provider_id = provider_id
+
+
 class RuntimePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -291,20 +299,46 @@ def build_router(settings: Settings) -> APIRouter:
     def get_hub_settings():
         return _build_view()
 
-    def _model_effort_problem(pid: str, model: str, effort: str) -> Optional[str]:
+    def _fetch_listing(pid: str) -> Optional[list]:
+        from backend.app.adapters.cli_catalog import cli_catalog
+        provider = next((p for p in load_cli_providers(settings.config_dir) if p.id == pid), None)
+        if provider is None:
+            return None
+        result = cli_catalog(provider, scope=str(settings.config_dir))
+        return result["models"] if result["status"] in ("ready", "stale") else None
+
+    def _locked_write(write):
+        """Run a settings write under the write lock, fetching CLI model listings outside it.
+
+        A listing may take CATALOG_TIMEOUT_SECONDS, so a write that needs one
+        leaves the lock, fetches it once for the whole request (a failure is
+        kept too) and runs again against the settings as they are by then.
+        Each pass adds a listing, so the loop ends within the known CLIs.
+        """
+        listings: Dict[str, Optional[list]] = {}
+        while True:
+            with _settings_write_lock:
+                try:
+                    return write(listings)
+                except _ListingNeeded as need:
+                    pid = need.provider_id
+            listings[pid] = _fetch_listing(pid)
+
+    def _model_effort_problem(pid: str, model: str, effort: str, listings: dict) -> Optional[str]:
         """Check an effort against the model it will run with; an unlisted model keeps the CLI's levels."""
         problem = _invalid_effort(pid, effort)
         if problem or not model:
             return problem
-        from backend.app.adapters.cli_catalog import model_efforts
-        provider = next((p for p in load_cli_providers(settings.config_dir) if p.id == pid), None)
-        levels = model_efforts(provider, model, scope=str(settings.config_dir)) if provider else None
+        from backend.app.adapters.cli_catalog import CATALOG_SPECS, has_fixed_effort, model_efforts
+        if pid in CATALOG_SPECS and pid not in listings and not has_fixed_effort(pid, model):
+            raise _ListingNeeded(pid)
+        levels = model_efforts(pid, model, listings.get(pid))
         if levels is not None and effort not in levels:
             return f"模型 {model} 不支持推理强度 {effort}" if levels else f"模型 {model} 已固定推理强度，不能再单独设置"
         return None
 
     def _validate_route(default: str, fallbacks: List[str], models: Dict[str, str], efforts: Dict[str, str],
-                        connections: dict) -> None:
+                        connections: dict, listings: dict) -> None:
         valid_ids = _committed_provider_ids() | set(connections)
         if default not in valid_ids:
             raise _bad_request(f"未知的主用连接：{default}")
@@ -321,14 +355,14 @@ def build_router(settings: Settings) -> APIRouter:
         for pid, effort in efforts.items():
             if pid not in (default, *fallbacks):
                 raise _bad_request(f"该连接不在角色路由中：{pid}")
-            problem = _model_effort_problem(pid, models.get(pid, ""), effort)
+            problem = _model_effort_problem(pid, models.get(pid, ""), effort, listings)
             if problem:
                 raise _bad_request(problem)
         for pid in (default, *fallbacks):
             if pid in connections and not models.get(pid, "").strip():
                 raise _bad_request("API 连接需要填写模型 ID")
 
-    def _save_custom_agent(agent_id: Optional[str], payload: CustomAgentInput) -> dict:
+    def _save_custom_agent(agent_id: Optional[str], payload: CustomAgentInput, listings: dict) -> dict:
         file_path = _settings_file_path()
         existing = hub_settings.load(file_path)
         custom = [entry for entry in existing.get(CUSTOM_AGENTS_KEY) or [] if isinstance(entry, dict)]
@@ -360,7 +394,7 @@ def build_router(settings: Settings) -> APIRouter:
         fallbacks = list(payload.fallback_provider_ids)
         models = {pid: model for pid, model in payload.provider_models.items() if model.strip()}
         efforts = {pid: effort for pid, effort in payload.provider_efforts.items() if effort}
-        _validate_route(default, fallbacks, models, efforts, existing.get("connections") or {})
+        _validate_route(default, fallbacks, models, efforts, existing.get("connections") or {}, listings)
         profile.update(default_provider_id=default, fallback_provider_ids=fallbacks, provider_models=models,
                        provider_efforts=efforts)
 
@@ -390,13 +424,11 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.post("/agents")
     def create_custom_agent(payload: CustomAgentInput):
-        with _settings_write_lock:
-            return _save_custom_agent(None, payload)
+        return _locked_write(lambda listings: _save_custom_agent(None, payload, listings))
 
     @router.put("/agents/{agent_id}")
     def update_custom_agent(agent_id: str, payload: CustomAgentInput):
-        with _settings_write_lock:
-            return _save_custom_agent(agent_id, payload)
+        return _locked_write(lambda listings: _save_custom_agent(agent_id, payload, listings))
 
     @router.delete("/agents/{agent_id}")
     def delete_custom_agent(agent_id: str):
@@ -417,10 +449,9 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.put("/settings")
     def put_hub_settings(patch: HubSettingsPatch):
-        with _settings_write_lock:
-            return _put_hub_settings(patch)
+        return _locked_write(lambda listings: _put_hub_settings(patch, listings))
 
-    def _put_hub_settings(patch: HubSettingsPatch):
+    def _put_hub_settings(patch: HubSettingsPatch, listings: dict):
         file_path = _settings_file_path()
         existing = hub_settings.load(file_path)
         previous_connections = existing.get("connections", {})
@@ -530,7 +561,7 @@ def build_router(settings: Settings) -> APIRouter:
             if patch.agents and agent.id in patch.agents:
                 # A patch may change only the model or only the effort, so check the merged pair.
                 for pid, effort in (override.get("provider_efforts", agent.provider_efforts) or {}).items():
-                    problem = _model_effort_problem(pid, models.get(pid, ""), effort) if effort else None
+                    problem = _model_effort_problem(pid, models.get(pid, ""), effort, listings) if effort else None
                     if problem:
                         raise HTTPException(status_code=400, detail=problem)
             for pid in [primary, *fallbacks]:

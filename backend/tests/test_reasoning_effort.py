@@ -2,6 +2,8 @@
 passed to each CLI with its own flag; an empty effort adds nothing."""
 
 import json
+import subprocess
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -202,3 +204,55 @@ def test_custom_role_rejects_effort_on_model_with_fixed_effort(temp_settings):
     response = client.post('/api/hub/agents', json=role)
     assert response.status_code == 400, response.text
     assert '已固定推理强度' in response.json()['detail']
+
+
+def test_settings_save_lists_each_cli_once_per_request_even_when_listing_fails(temp_settings, monkeypatch):
+    # Issue #135: a cold cache with a timing-out listing used to run it once per role.
+    cli_catalog._cache.clear()
+    monkeypatch.setattr(cli_catalog.shutil, 'which', lambda command: '/usr/bin/' + command)
+    run = Mock(side_effect=subprocess.TimeoutExpired('codex', cli_catalog.CATALOG_TIMEOUT_SECONDS))
+    monkeypatch.setattr(cli_catalog.subprocess, 'run', run)
+    client = TestClient(create_app(temp_settings))
+    route = {'provider_models': {'codex': 'gpt-fixture'}, 'provider_efforts': {'codex': 'low'}}
+    response = client.put('/api/hub/settings', json={'agents': {aid: route for aid in ('wangye', 'chulan', 'baobao')}})
+    # A failed listing leaves the model's capability unknown, so the CLI's own levels apply.
+    assert response.status_code == 200, response.text
+    assert run.call_count == 1
+    cli_catalog._cache.clear()
+
+
+def test_settings_lock_is_free_while_listing_and_save_rechecks_latest_settings(temp_settings, monkeypatch):
+    # Issue #135: listing runs outside the settings write lock, and the save then
+    # validates against whatever another write committed in the meantime.
+    cli_catalog._cache.clear()
+    listing, release = threading.Event(), threading.Event()
+
+    def slow_run(*args, **kwargs):
+        listing.set()
+        assert release.wait(10)
+        return subprocess.CompletedProcess([], 0, stdout=b'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n')
+
+    monkeypatch.setattr(cli_catalog.shutil, 'which', lambda command: '/usr/bin/' + command)
+    monkeypatch.setattr(cli_catalog.subprocess, 'run', slow_run)
+    app = create_app(temp_settings)
+    client = TestClient(app)
+    assert _put_agent(client, 'wangye', {'provider_models': {'antigravity': 'gemini-3.8-flash'}}).status_code == 200
+
+    result = {}
+    effort_save = threading.Thread(target=lambda: result.update(
+        response=_put_agent(TestClient(app), 'wangye', {'provider_efforts': {'antigravity': 'low'}})))
+    effort_save.start()
+    try:
+        assert listing.wait(10)
+        # While the listing is still running, another write goes through and fixes the model's effort.
+        other = _put_agent(client, 'wangye', {'provider_models': {'antigravity': 'gemini-3.8-flash-high'}})
+        assert other.status_code == 200, other.text
+    finally:
+        release.set()
+        effort_save.join(10)
+    assert result['response'].status_code == 400, result['response'].text
+    assert '已固定推理强度' in result['response'].json()['detail']
+    view = next(a for a in client.get('/api/hub/settings').json()['agents'] if a['id'] == 'wangye')
+    assert view['provider_models']['value']['antigravity'] == 'gemini-3.8-flash-high'
+    assert not view['provider_efforts']['value'].get('antigravity')
+    cli_catalog._cache.clear()

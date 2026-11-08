@@ -154,15 +154,19 @@ def cli_catalog(provider, *, scope='', refresh=False):
     return dict(result)
 
 
-def model_efforts(provider, model, *, scope=''):
+def has_fixed_effort(provider_id, model):
+    """Whether the model name itself fixes its effort, which needs no listing to tell."""
+    return provider_id == 'antigravity' and bool(_FIXED_EFFORT_SUFFIX.search(model))
+
+
+def model_efforts(provider_id, model, models):
     """Effort levels a known model accepts, or None when its capability is unknown.
 
-    Unknown covers hand-typed models, CLIs without a listing and failed listings;
-    callers then fall back to the levels the CLI accepts in general.
+    `models` is the CLI's listing, or None when it has none or could not be
+    fetched. Unknown covers hand-typed models, CLIs without a listing and failed
+    listings; callers then fall back to the levels the CLI accepts in general.
     """
-    if provider.id == 'antigravity' and _FIXED_EFFORT_SUFFIX.search(model):
+    if has_fixed_effort(provider_id, model):
         return []
-    if provider.id not in CATALOG_SPECS:
-        return None
-    listed = next((m for m in cli_catalog(provider, scope=scope)['models'] if m['id'] == model), None)
+    listed = next((m for m in models or () if m['id'] == model), None)
     return None if listed is None else listed.get('efforts')
