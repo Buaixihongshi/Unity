@@ -4797,7 +4797,7 @@ summary:focus-visible {
   padding: 6px 8px;
   border-radius: 6px;
   border: 1px solid var(--ink-line);
-  background: var(--paper-soft);
+  background: var(--surface);
   color: var(--ink-muted);
   font-size: 0.78rem;
   font-weight: 600;
@@ -4812,7 +4812,6 @@ summary:focus-visible {
 
 .effort-select.is-active {
   border-color: var(--sage-strong);
-  background: var(--sage-soft);
   color: var(--ink);
 }
 
