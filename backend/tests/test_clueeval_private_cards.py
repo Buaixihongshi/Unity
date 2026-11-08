@@ -138,6 +138,14 @@ def test_parse_pick(qid, text, pick):
     assert C.parse_pick(QUESTIONS[qid], text) == pick
 
 
+def test_global_instruction_digests_report_presence_without_content(tmp_path):
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/AGENTS.md").write_text("用中文回复")
+    found = C.global_instructions(tmp_path)
+    assert found["claude"] is None and found["antigravity"] is None
+    assert found["codex"] == C.sha256_bytes("用中文回复".encode())[:12]
+
+
 def test_roster_follows_routing_and_seats_four_roles():
     routing = {"agents": {"chulan": {"default_provider_id": "claude", "provider_models": {"claude": "opus"}},
                           "baobao": {"default_provider_id": "codex", "provider_models": {"codex": "m"}},

@@ -231,6 +231,17 @@ def cli_responder(timeout: int = 600) -> Responder:
     return respond
 
 
+# User-level instruction files the CLIs load on their own, outside the prompt we build.
+GLOBAL_INSTRUCTION_FILES = {"claude": ".claude/CLAUDE.md", "codex": ".codex/AGENTS.md", "antigravity": ".gemini/GEMINI.md"}
+
+
+def global_instructions(home: Optional[Path] = None) -> Dict[str, Optional[str]]:
+    """Digest (not content or path) of each CLI's user-level instructions; None when absent."""
+    home = home or Path.home()
+    return {provider: sha256_bytes((home / rel).read_bytes())[:12] if (home / rel).is_file() else None
+            for provider, rel in GLOBAL_INSTRUCTION_FILES.items()}
+
+
 def resolve_roster(hub_settings: dict, n: int, roles=DEFAULT_ROSTER) -> List[Seat]:
     if n > len(roles):
         raise ValueError(f"need {n} seats, roster has {len(roles)} roles")

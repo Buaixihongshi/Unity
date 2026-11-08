@@ -26,3 +26,9 @@
 - 数据集：`YuxuanLi1225/HiddenBench`，MIT License，作者 Yuxuan Li 等。论文：arXiv:2505.11556。
 - 修订版本 `1e3c25b1fd798c6717f4df0463edd3825c8e37f9`。`benchmark.json` 的 sha256 为 `2815afffca4e470d1dfbc81e625160447df1109ce371968181c9e1e6b90443a3`，题号 9。
 - 原始条目的规范 JSON 摘要记录在 `origin.item_sha256`。题面与答案拆开存放，测试会把两部分拼回原条目，再核对这个摘要。
+
+## 已知限制
+
+- CLI 会自己加载用户级指令文件，这部分不在我们拼的提示里：Codex 读 `~/.codex/AGENTS.md`，Antigravity 读 `~/.gemini/GEMINI.md`，Claude 读 `~/.claude/CLAUDE.md`。所以“初始上下文只有材料”只对我们构造的那部分提示成立。manifest 会记下这几个文件的摘要（`cli_global_instructions_sha256`），对比不同批次时要先核对摘要是否一致。Codex 的 `project_doc_max_bytes=0` 屏蔽不了全局文件，实测确认过。
+- Codex 在只读沙箱里，技术上仍能读本机文件，包括答案文件。每次调用会记录 Codex 的工具事件（`tool_items`），一旦非空就要人工复查。Antigravity 的 `tool_calls_in_log` 只是在日志里做正则计数，这条规则还没拿实际用到工具的日志验证过。
+- 这里只把首行或 JSON 里的选项解析成 pick，不算排除分和披露率。那部分判分继续由人工确认（见 #129）。

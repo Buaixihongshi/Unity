@@ -63,6 +63,8 @@ def run(args) -> int:
     }
     if args.mode == "real":
         manifest["cli_versions"] = {c: _cli_version(c) for c in ("claude", "codex", "agy")}
+        # These files reach the model besides our prompt; recorded so runs stay comparable.
+        manifest["cli_global_instructions_sha256"] = C.global_instructions()
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     writer = C.GameWriter(out)
     for qid in selected:
