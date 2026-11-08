@@ -328,3 +328,58 @@ def test_score_treats_games_without_a_validity_field_as_invalid(tmp_path):
     path.write_text(json.dumps(game))
     result = C.score(tmp_path, DATA / "answer_key.json")
     assert result["games"] == [] and result["invalid_games"][0]["reason"] == "validity not recorded"
+
+
+# ---------------------------------------------------------------- #141: CLI timeout / launch failure is recorded
+
+def _cli_seats(n):
+    return [C.Seat(i, f"r{i}", "claude", "m") for i in range(n)]
+
+
+@pytest.mark.parametrize("error,reason", [
+    (C.subprocess.TimeoutExpired(["claude"], 5, stderr=b"partial output"), "timeout after 5s"),
+    (FileNotFoundError(2, "No such file or directory", "/opt/private-tools/bin/claude"), "launch failed: FileNotFoundError errno=2"),
+])
+def test_cli_failure_voids_the_game_and_is_kept_in_calls_games_and_score(tmp_path, monkeypatch, error, reason):
+    # The reproduction from #141: subprocess.run raising used to abort the batch with nothing written.
+    def run(cmd, cwd, **kwargs):
+        raise error
+
+    monkeypatch.setattr(C.subprocess, "run", run)
+    q = QUESTIONS["q1-storage"]
+    record = C.run_game(q, 0, "private", 1, _cli_seats(3), C.cli_responder(timeout=5), C.GameWriter(tmp_path))
+    assert record["valid"] is False and reason in record["invalid_reason"]
+    logged = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    assert len(logged) == 3 and {c["phase"] for c in logged} == {"pre"}
+    assert all(c["valid"] is False and c["invalid_reasons"] == [reason] and c["rc"] is None for c in logged)
+    assert "/opt/private-tools" not in (tmp_path / "calls.jsonl").read_text()
+    assert (tmp_path / "games" / f"{record['game']}.json").exists()
+    result = C.score(tmp_path, DATA / "answer_key.json")
+    assert result["games"] == [] and result["invalid_games"][0]["game"] == record["game"]
+    assert reason in result["invalid_games"][0]["reason"]
+
+
+def test_timeout_keeps_a_decoded_stderr_tail(monkeypatch):
+    def run(cmd, cwd, **kwargs):
+        raise C.subprocess.TimeoutExpired(cmd, kwargs["timeout"], stderr=b"x" * 700 + b"stalled")
+
+    monkeypatch.setattr(C.subprocess, "run", run)
+    result = C.cli_responder(timeout=7)(C.Seat(0, "r", "codex", "m"), "pre", "prompt")
+    assert result["valid"] is False and result["invalid_reasons"] == ["timeout after 7s"]
+    assert result["stderr_tail"].endswith("stalled") and len(result["stderr_tail"]) == 600
+
+
+def test_a_responder_that_raises_still_leaves_an_invalid_record(tmp_path):
+    q = QUESTIONS["q2-rootcause"]
+    base = C.fixture_responder(q)
+
+    def crashing(seat, phase, prompt):
+        if phase == "discuss":
+            raise RuntimeError("boom")
+        return base(seat, phase, prompt)
+
+    record = C.run_game(q, 0, "private", 1, _fixture_seats(3), crashing, C.GameWriter(tmp_path))
+    assert record["valid"] is False and "responder raised RuntimeError" in record["invalid_reason"]
+    assert all(s["pre_pick"] for s in record["seats"])  # what finished before the failure is kept
+    logged = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    assert logged[-1]["phase"] == "discuss" and logged[-1]["valid"] is False

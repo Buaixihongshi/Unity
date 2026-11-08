@@ -12,7 +12,7 @@
 
 - `questions.json`：只放题面、共享材料、私卡和候选项。加载时如果发现 `correct_answer`、`rationale` 这类答案侧字段，直接拒绝。
 - `answer_key.json`：正解、诱饵和出题理由。只有 `run_clueeval.py score` 会读这个文件，跑题阶段不读。
-- 每次调用都必须无工具。三家 CLI 都改成逐条输出事件，`cli_responder` 逐条检查：出现工具事件，或者无法确认没用工具（缺 init/result 事件、退出码非 0、空回复、Antigravity 日志里看不到禁用规则生效），这次调用就记为无效，附上 `invalid_reasons`。这一局随即停下，记录 `valid=false` 和原因后写盘；`score` 不计入，单独列在 `invalid_games` 里。
+- 每次调用都必须无工具。三家 CLI 都改成逐条输出事件，`cli_responder` 逐条检查：出现工具事件，或者无法确认没用工具（缺 init/result 事件、退出码非 0、空回复、Antigravity 日志里看不到禁用规则生效），这次调用就记为无效，附上 `invalid_reasons`。CLI 超时或启动失败（如命令不存在）同样记为无效调用，只留错误类型、errno 和 stderr 末尾，不记异常原文里的路径；其他应答器异常按 `responder raised <类型>` 记。这一局随即停下，记录 `valid=false` 和原因后写盘，批次继续跑下一局；`score` 不计入，单独列在 `invalid_games` 里。
 - 每次调用都会记录初始上下文里实际找到了哪几张卡（`cards_in_initial_context`）。找到的卡和本席位分到的卡不一致时，CLI 启动前就会报错停下。别人的私卡只能经由讨论记录、在持卡人发过言之后才出现（`cards_in_transcript`）。
 
 ## 协议

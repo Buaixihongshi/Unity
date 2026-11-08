@@ -307,13 +307,29 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
     return result.get("response"), meta, violations
 
 
+def failed_call(reason: str, seconds: Optional[float] = None, stderr=None) -> dict:
+    """A call that produced no usable answer; kept as an invalid record instead of an exception."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    return {"text": None, "rc": None, "seconds": seconds, "meta": {"failure": reason}, "valid": False,
+            "invalid_reasons": [reason], "stderr_tail": (stderr or "")[-600:]}
+
+
 def cli_responder(timeout: int = 600) -> Responder:
     def respond(seat: Seat, phase: str, prompt: str) -> dict:
         with _SEMAPHORES[seat.provider], tempfile.TemporaryDirectory(prefix="clueeval-call-") as tmp:
             workdir = Path(tmp)
             started = time.time()
-            proc = subprocess.run(cli_command(seat, prompt, workdir), cwd=workdir, capture_output=True,
-                                  text=True, stdin=subprocess.DEVNULL, timeout=timeout)
+            try:
+                proc = subprocess.run(cli_command(seat, prompt, workdir), cwd=workdir, capture_output=True,
+                                      text=True, stdin=subprocess.DEVNULL, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                # run() has already killed the CLI; partial output is not inspected, the call is void either way.
+                return failed_call(f"timeout after {timeout}s", round(time.time() - started, 1), exc.stderr)
+            except OSError as exc:
+                # Error class and errno only: the message can carry the executable's full path.
+                return failed_call(f"launch failed: {type(exc).__name__} errno={exc.errno}",
+                                   round(time.time() - started, 1))
             seconds = round(time.time() - started, 1)
             text, meta, violations = None, {}, []
             try:
@@ -394,7 +410,10 @@ def run_game(q: dict, game: int, condition: str, rounds: int, seats: List[Seat],
         prompt = phase_prompt(q, contexts[seat.index], phase, seat.index, n, transcript, round_no, rounds)
         if not prompt.startswith(contexts[seat.index]):
             raise IsolationError("prompt must start with the audited context")
-        result = respond(seat, phase, prompt)
+        try:
+            result = respond(seat, phase, prompt)
+        except Exception as exc:  # a crashing responder still leaves a logged, invalid call and a voided game
+            result = failed_call(f"responder raised {type(exc).__name__}")
         writer.call({"game": gid, "seat": seat.index + 1, "role": seat.role, "provider": seat.provider,
                      "model": seat.model, "phase": phase, "round": round_no,
                      "cards_in_initial_context": received[seat.index],
