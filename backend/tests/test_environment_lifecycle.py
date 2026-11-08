@@ -111,7 +111,8 @@ def daily_cli(source_repo):
     overrides = {'runtime': {'use_fake_cli': False, 'cli_timeout': 600},
         'providers': {'codex': {'enabled': True}, 'antigravity': {'enabled': True}},
         'agents': {'designer': {'default_provider_id': 'antigravity', 'fallback_provider_ids': ['codex'],
-            'provider_models': {'antigravity': 'daily-model', 'api-private': 'private-model'}}},
+            'provider_models': {'antigravity': 'daily-model', 'api-private': 'private-model'},
+            'provider_efforts': {'antigravity': 'high', 'api-private': 'max'}}},
         'connections': {'api-private': {'key_ref': 'private-key-reference', 'base_url': 'https://private.invalid'}}}
     common.write_json(state / 'data/hub_settings.json', overrides)
     (state / 'data/daily-conversations.sqlite3').write_bytes(b'daily data must never be copied')
@@ -139,6 +140,7 @@ def test_alpha_inherits_effective_daily_cli_without_copying_data_or_connections(
     assert settings['agents']['designer']['default_provider_id'] == 'antigravity'
     assert settings['agents']['designer']['fallback_provider_ids'] == ['codex']
     assert settings['agents']['designer']['provider_models'] == {'antigravity': 'daily-model'}
+    assert settings['agents']['designer']['provider_efforts'] == {'antigravity': 'high'}
     assert settings['runtime']['cli_timeout'] == 600
     assert settings['runtime']['maintenance_enabled'] is False
     assert 'connections' not in settings
@@ -200,6 +202,7 @@ def test_development_entrypoint_defaults_to_real_daily_routes(daily_cli, monkeyp
     settings = json.loads((state / 'data/hub_settings.json').read_text())
     assert settings['agents']['designer']['default_provider_id'] == 'antigravity'
     assert settings['agents']['designer']['provider_models'] == {'antigravity': 'daily-model'}
+    assert settings['agents']['designer']['provider_efforts'] == {'antigravity': 'high'}
     assert all(p.read_bytes() == raw for p, raw in before.items())
 
 

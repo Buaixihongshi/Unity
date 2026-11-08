@@ -45,6 +45,7 @@ def runtime_cli_snapshot(checkout, *, real=False):
                 raise EnvironmentError("Daily role uses a demo or non-CLI connection; CLI-only inheritance cannot silently change its route")
             routes[agent["id"]] = {"default_provider_id": primary, "fallback_provider_ids": fallbacks,
                 "provider_models": {k: v for k, v in override.get("provider_models", agent.get("provider_models", {})).items() if k in ids},
+                "provider_efforts": {k: v for k, v in override.get("provider_efforts", agent.get("provider_efforts", {})).items() if k in ids},
                 "fallback_context_approved": bool(override.get("fallback_context_approved", False))}
         runtime = {k: overrides.get("runtime", {}).get(k, v) for k, v in RUNTIME_DEFAULTS.items()}
         if not isinstance(runtime["use_fake_cli"], bool): raise ValueError("Invalid runtime mode")

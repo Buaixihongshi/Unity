@@ -71,14 +71,20 @@ class ProviderRouterAdapter(CLIAdapter):
             self._gemini_home = None
         self._gemini_sessions.clear()
 
-    def _model_for(self, agent_id, provider_id):
+    def _route_value(self, agent_id, provider_id, field):
         override = self.agent_overrides.get(agent_id)
         agent = get_agent_registry(self.config_dir).get(agent_id)
-        if override and override.provider_models is not None:
-            models = override.provider_models
+        if override and getattr(override, field) is not None:
+            values = getattr(override, field)
         else:
-            models = agent.provider_models if agent else {}
-        return models.get(provider_id, "")
+            values = getattr(agent, field) if agent else {}
+        return values.get(provider_id, "")
+
+    def _model_for(self, agent_id, provider_id):
+        return self._route_value(agent_id, provider_id, "provider_models")
+
+    def _effort_for(self, agent_id, provider_id):
+        return self._route_value(agent_id, provider_id, "provider_efforts")
 
     def _api_adapter(self, agent_id, provider_id):
         from backend.app.adapters.api_text import APITextAdapter
@@ -111,8 +117,9 @@ class ProviderRouterAdapter(CLIAdapter):
         except ProviderNotFoundError:
             return TurnOutcome(status=TurnStatus.BLOCKED, summary="Unknown connection configuration", failure_code="configuration", retryable=False)
 
-        from backend.app.adapters.model_selection import with_model
-        provider = with_model(provider, self._model_for(agent_id, provider_id))
+        from backend.app.adapters.model_selection import with_model_and_effort
+        provider = with_model_and_effort(provider, self._model_for(agent_id, provider_id),
+                                         self._effort_for(agent_id, provider_id))
 
         if not provider.enabled:
             return TurnOutcome(

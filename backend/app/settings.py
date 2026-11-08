@@ -15,6 +15,11 @@ class AgentOverride(BaseModel):
     default_provider_id: Optional[str] = None
     fallback_provider_ids: Optional[list[str]] = None
     provider_models: Optional[Dict[str, str]] = None
+    provider_efforts: Optional[Dict[str, str]] = None
+
+
+_AGENT_OVERRIDE_KEYS = {"default_provider_id", "fallback_provider_ids", "provider_models", "provider_efforts",
+                        "fallback_context_approved", "fallback_context_targets"}
 
 
 class Settings(BaseModel):
@@ -126,7 +131,7 @@ def get_settings() -> Settings:
             if isinstance(adata, dict):
                 agent_overrides[aid] = AgentOverride(**{
                     k: v for k, v in adata.items()
-                    if k in {"default_provider_id", "fallback_provider_ids", "provider_models", "fallback_context_approved", "fallback_context_targets"}
+                    if k in _AGENT_OVERRIDE_KEYS
                 })
     kwargs["agent_overrides"] = agent_overrides
 
@@ -191,7 +196,7 @@ def snapshot_settings(app_settings: "Settings") -> "Settings":
         if isinstance(adata, dict):
             agent_overrides[aid] = AgentOverride(**{
                 k: v for k, v in adata.items()
-                if k in {"default_provider_id", "fallback_provider_ids", "provider_models", "fallback_context_approved", "fallback_context_targets"}
+                if k in _AGENT_OVERRIDE_KEYS
             })
     kwargs["agent_overrides"] = agent_overrides
 
