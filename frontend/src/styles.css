@@ -4775,7 +4775,7 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
-/* Model field with its reasoning-effort pill beside it. */
+/* Model field with its reasoning-effort picker beside it. */
 .model-effort-group {
   display: flex;
   align-items: center;
@@ -4792,15 +4792,22 @@ summary:focus-visible {
 
 .effort-select {
   flex: none;
+  align-self: stretch;
   max-width: 8.5rem;
   padding: 6px 8px;
-  border-radius: 999px;
+  border-radius: 6px;
   border: 1px solid var(--ink-line);
   background: var(--paper-soft);
   color: var(--ink-muted);
   font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+.role-table .effort-select {
+  height: 28px;
+  padding: 3px 8px;
+  line-height: 20px;
 }
 
 .effort-select.is-active {
