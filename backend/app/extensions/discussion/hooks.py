@@ -151,7 +151,7 @@ def run_deliberation_turn(router, mission_id, agent_id, turn_id, provider_id, pr
         return router.fake_adapter.run_turn(mission_id, agent_id, turn_id, provider_id, prompt, tools)
     from backend.app.extensions.discussion.deliberation_cli import DeliberationCLIAdapter
     return DeliberationCLIAdapter(router.config_dir, remaining_timeout(router.cli_timeout), router.provider_overrides,
-        model=router._model_for(agent_id, provider_id)).run_turn(
+        model=router._model_for(agent_id, provider_id), effort=router._effort_for(agent_id, provider_id)).run_turn(
         mission_id, agent_id, turn_id, provider_id, prompt, tools)
 
 

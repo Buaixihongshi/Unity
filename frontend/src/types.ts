@@ -517,6 +517,8 @@ export interface HubSettingsProviderView {
   id: string;
   label: string;
   enabled: SettingField<boolean>;
+  /** Effort levels this CLI accepts; empty when it has no effort setting. */
+  efforts?: string[];
 }
 
 export interface HubSettingsRuntimeView {
@@ -560,6 +562,8 @@ export interface ConnectionModelItem {
   id: string;
   label: string;
   vendor: string | null;
+  /** Effort levels this model supports, when the CLI reports them per model. */
+  efforts?: string[];
 }
 
 export interface ConnectionCatalogView {
@@ -583,6 +587,8 @@ export interface HubSettingsAgentView {
   fallback_provider_ids: SettingField<string[]>;
   provider_models?: SettingField<Record<string, string>>;
   base_provider_models?: Record<string, string>;
+  provider_efforts?: SettingField<Record<string, string>>;
+  base_provider_efforts?: Record<string, string>;
   base_default_provider_id: string;
   base_fallback_provider_ids: string[];
   fallback_context_approved?: SettingField<boolean>;
@@ -611,6 +617,7 @@ export interface CustomAgentInput {
   default_provider_id: string;
   fallback_provider_ids: string[];
   provider_models: Record<string, string>;
+  provider_efforts?: Record<string, string>;
 }
 
 export interface ProviderOverridePatch {
@@ -627,6 +634,7 @@ export interface RuntimePatch {
 
 export interface AgentOverridePatch {
   provider_models?: Record<string, string>;
+  provider_efforts?: Record<string, string>;
   default_provider_id?: string;
   fallback_provider_ids?: string[];
   fallback_context_approved?: boolean;

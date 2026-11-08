@@ -860,6 +860,8 @@ def _apply_agent_overrides(
             updates["fallback_provider_ids"] = list(ov.fallback_provider_ids)
         if ov.provider_models is not None:
             updates["provider_models"] = dict(ov.provider_models)
+        if ov.provider_efforts is not None:
+            updates["provider_efforts"] = dict(ov.provider_efforts)
         result.append(agent.model_copy(update=updates) if updates else agent)
     return result
 

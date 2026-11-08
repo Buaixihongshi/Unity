@@ -106,6 +106,7 @@ class AgentProfile(BaseModel):
     default_provider_id: str
     fallback_provider_ids: list[str] = Field(default_factory=list)
     provider_models: dict[str, str] = Field(default_factory=dict)
+    provider_efforts: dict[str, str] = Field(default_factory=dict)
     capability_hints: list[str] = Field(default_factory=list)
     trigger_points: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)

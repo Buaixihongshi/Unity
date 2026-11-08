@@ -6,12 +6,19 @@ accepts aliases) or through a listing subcommand (`codex debug models`,
 they describe the CLI binary itself, and managed environments export provider
 config with a fixed field allowlist. Listing runs the local binary without
 sending a prompt, so it costs no model usage; results are cached per process.
+Models that list their own effort levels (Codex) carry them per entry, which
+narrows the levels the CLI accepts in general. Antigravity's listed models
+already fix their effort (`-low`/`-high` variants) or reject `--effort`, so they
+carry an empty list; only its default or a hand-typed base model takes one.
 """
 import json
+import re
 import shutil
 import subprocess
 import threading
 from datetime import datetime, timezone
+
+from backend.app.adapters.model_selection import EFFORT_LEVELS
 
 CATALOG_TIMEOUT_SECONDS = 20
 MAX_OUTPUT_BYTES = 2_000_000
@@ -25,11 +32,16 @@ class CatalogError(Exception):
     pass
 
 
-# provider id -> {"models": [(id, label)]} or {"args": [...], "format": parser name}
+# Antigravity names a model's fixed effort as its suffix (`gemini-3.8-flash-high`);
+# such a model rejects `--effort` even when no listing has been fetched yet.
+_FIXED_EFFORT_SUFFIX = re.compile(r'-(?:minimal|low|medium|high|xhigh|max)$')
+
+# provider id -> {"models": [(id, label)]} or {"args": [...], "format": parser name};
+# "fixed_effort" marks CLIs whose listed models cannot take a separate effort.
 CATALOG_SPECS = {
     'claude': {'models': [('fable', 'Fable（最新）'), ('opus', 'Opus（最新）'), ('sonnet', 'Sonnet（最新）')]},
     'codex': {'args': ['debug', 'models'], 'format': 'codex_json'},
-    'antigravity': {'args': ['models'], 'format': 'tab_separated'},
+    'antigravity': {'args': ['models'], 'format': 'tab_separated', 'fixed_effort': True},
 }
 
 
@@ -48,6 +60,14 @@ def _entry(model_id, label):
     return dict(id=model_id, label=label[:200], vendor=None)
 
 
+def _codex_efforts(item):
+    levels = item.get('supported_reasoning_levels')
+    if not isinstance(levels, list):
+        return None
+    efforts = [level.get('effort') for level in levels if isinstance(level, dict)]
+    return [effort for effort in efforts if effort in EFFORT_LEVELS['codex']] or None
+
+
 def parse_codex_json(output):
     try:
         data = json.loads(output)
@@ -59,7 +79,14 @@ def parse_codex_json(output):
     listed = [item for item in items if isinstance(item, dict) and _valid_id(item.get('slug'))
               and item.get('visibility', 'list') == 'list']
     listed.sort(key=lambda item: item.get('priority') if isinstance(item.get('priority'), (int, float)) else 1e9)
-    return [_entry(item['slug'], item.get('display_name')) for item in listed]
+    models = []
+    for item in listed:
+        entry = _entry(item['slug'], item.get('display_name'))
+        efforts = _codex_efforts(item)
+        if efforts:
+            entry['efforts'] = efforts
+        models.append(entry)
+    return models
 
 
 def parse_tab_separated(output):
@@ -91,7 +118,11 @@ def _list_models(provider, spec):
     if completed.returncode != 0:
         raise CatalogError(f'{provider.label} 未能列出模型（退出码 {completed.returncode}）')
     output = completed.stdout[:MAX_OUTPUT_BYTES].decode('utf-8', errors='replace')
-    return _PARSERS[spec['format']](output)
+    models = _PARSERS[spec['format']](output)
+    if spec.get('fixed_effort'):
+        for model in models:
+            model['efforts'] = []
+    return models
 
 
 def cli_catalog(provider, *, scope='', refresh=False):
@@ -121,3 +152,21 @@ def cli_catalog(provider, *, scope='', refresh=False):
     with _lock:
         _cache[key] = result
     return dict(result)
+
+
+def has_fixed_effort(provider_id, model):
+    """Whether the model name itself fixes its effort, which needs no listing to tell."""
+    return provider_id == 'antigravity' and bool(_FIXED_EFFORT_SUFFIX.search(model))
+
+
+def model_efforts(provider_id, model, models):
+    """Effort levels a known model accepts, or None when its capability is unknown.
+
+    `models` is the CLI's listing, or None when it has none or could not be
+    fetched. Unknown covers hand-typed models, CLIs without a listing and failed
+    listings; callers then fall back to the levels the CLI accepts in general.
+    """
+    if has_fixed_effort(provider_id, model):
+        return []
+    listed = next((m for m in models or () if m['id'] == model), None)
+    return None if listed is None else listed.get('efforts')
