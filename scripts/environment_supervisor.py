@@ -133,7 +133,8 @@ def supervise(root, profile, *, real=False, providers="codex", backend=None, fro
                 logs.append(log)
                 args = backend_command(py, backend, reload if reload is not None else profiles()[profile]["reload"],
                                        [d for d in (root / ".yiren", state) if d.is_dir()])
-                children.append(subprocess.Popen(args, cwd=root, env=env, stdout=log, stderr=log, start_new_session=True))
+                children.append(subprocess.Popen(args, cwd=root, env=env, stdout=log, stderr=log,
+                                                       stdin=subprocess.DEVNULL, start_new_session=True))
                 if not backend_only:
                     production = profile in {"alpha", "runtime"}
                     if profile == "alpha":
@@ -144,7 +145,7 @@ def supervise(root, profile, *, real=False, providers="codex", backend=None, fro
                     logs.append(log)
                     front_command = ["npm", "exec", "vite", "--", "preview"] if production else ["npm", "run", "dev", "--"]
                     children.append(subprocess.Popen([*front_command, "--host", "127.0.0.1", "--port", str(frontend), "--strictPort"],
-                        cwd=root / "frontend", env=env, stdout=log, stderr=log, start_new_session=True))
+                        cwd=root / "frontend", env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True))
                 deadline = time.monotonic() + 45
                 while True:
                     if any(c.poll() is not None for c in children): raise EnvironmentError(f"Service exited; inspect {state / 'runtime'}")
@@ -221,7 +222,7 @@ def start(root, profile, *, detach=False, **kwargs):
     write_json(spec_path, spec)
     with (state / "runtime/supervisor.log").open("a") as log:
         child = subprocess.Popen([py, ROOT / "scripts/environment_cli.py", "_supervise", str(spec_path)],
-                                  cwd=ROOT, stdout=log, stderr=log, start_new_session=True)
+                                  cwd=ROOT, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
     for _ in range(500):
         record = read_record(root, profile, kwargs.get("real", False), kwargs.get("state"))
         if record and record.get("supervisor_pid") == child.pid and record.get("status") == "running":
