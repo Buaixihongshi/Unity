@@ -4038,10 +4038,10 @@ summary:focus-visible {
 .role-table thead th:first-child { border-top-left-radius: 4px; }
 .role-table thead th:last-child { border-top-right-radius: 4px; }
 .role-table tbody tr:last-child > * { border-bottom: 0; }
-.role-table tbody th { width: 20%; }
-.role-table tbody td:nth-of-type(1) { width: 24%; }
-.role-table tbody td:nth-of-type(2) { width: 28%; }
-.role-table tbody td:nth-of-type(3) { width: 22%; }
+.role-table tbody th { width: 18%; }
+.role-table tbody td:nth-of-type(1) { width: 20%; }
+.role-table tbody td:nth-of-type(2) { width: 38%; }
+.role-table tbody td:nth-of-type(3) { width: 18%; }
 
 .role-table tr.is-expanded > * {
   background: var(--paper-soft);
@@ -4773,6 +4773,45 @@ summary:focus-visible {
 .model-manual-field .btn-tiny {
   flex: none;
   white-space: nowrap;
+}
+
+/* Model field with its reasoning-effort pill beside it. */
+.model-effort-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-effort-group > .custom-select,
+.model-effort-group > .custom-input,
+.model-effort-group > .model-manual-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.effort-select {
+  flex: none;
+  max-width: 8.5rem;
+  padding: 6px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ink-line);
+  background: var(--paper-soft);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.effort-select.is-active {
+  border-color: var(--sage-strong);
+  background: var(--sage-soft);
+  color: var(--ink);
+}
+
+.effort-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .catalog-models-summary {

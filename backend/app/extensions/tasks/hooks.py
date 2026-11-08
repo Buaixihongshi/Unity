@@ -107,7 +107,8 @@ def route_turn(router, mission_id, agent_id, turn_id, provider_id, prompt, tools
             tools.repository.add_event(mission_id, 'adaptive.capability_unavailable', {'reason': 'isolation_not_supported'})
             return TurnOutcome(status=TurnStatus.BLOCKED, summary='当前平台不支持受限工作执行', retryable=False)
         return DeliberationCLIAdapter(router.config_dir, remaining_timeout(router.cli_timeout), router.provider_overrides,
-            model=router._model_for(agent_id, provider_id), work_context=work_context).run_turn(
+            model=router._model_for(agent_id, provider_id), effort=router._effort_for(agent_id, provider_id),
+            work_context=work_context).run_turn(
                 mission_id, agent_id, turn_id, provider_id, prompt, tools)
     return None
 

@@ -21,6 +21,7 @@ import { roleToneIndex } from "../lib/personaColors";
 import { ObservabilityOverview } from "./ObservabilityOverview";
 import { MemoryPanel } from "./MemoryPanel";
 import { RoleEditor, type RoleRouteOption } from "./RoleEditor";
+import { EffortSelect, effortAfterModelChange, effortChoices } from "./EffortSelect";
 import {
   createCustomAgent,
   deleteCustomAgent,
@@ -81,6 +82,7 @@ const CATALOG_STATUS_LABELS: Record<string, string> = {
 
 interface AgentDraft {
   providerModels?: Record<string, string>;
+  providerEfforts?: Record<string, string>;
   defaultProvider?: string;
   fallbacks?: string[];
   fallbackContextApproved?: boolean;
@@ -328,6 +330,7 @@ export function SettingsModal({
       agent.default_provider_id.source === "user" ||
       agent.fallback_provider_ids.source === "user" ||
       agent.provider_models?.source === "user" ||
+      agent.provider_efforts?.source === "user" ||
       agent.fallback_context_approved?.source === "user";
     return { defaultProvider, fallbacks, fallbackContextApproved, isUserOverride };
   }
@@ -340,12 +343,19 @@ export function SettingsModal({
         agent.default_provider_id.source === "user" ||
         agent.fallback_provider_ids.source === "user" ||
         agent.provider_models?.source === "user" ||
+        agent.provider_efforts?.source === "user" ||
         agent.fallback_context_approved?.source === "user"
       );
     }
     if (
       draft.providerModels !== undefined &&
       JSON.stringify(draft.providerModels) !== JSON.stringify(agent.provider_models?.value ?? {})
+    ) {
+      return true;
+    }
+    if (
+      draft.providerEfforts !== undefined &&
+      JSON.stringify(draft.providerEfforts) !== JSON.stringify(agent.provider_efforts?.value ?? {})
     ) {
       return true;
     }
@@ -453,6 +463,12 @@ export function SettingsModal({
         JSON.stringify(draft.providerModels) !== JSON.stringify(agent.provider_models?.value ?? {})
       ) {
         entry.provider_models = draft.providerModels;
+      }
+      if (
+        draft.providerEfforts !== undefined &&
+        JSON.stringify(draft.providerEfforts) !== JSON.stringify(agent.provider_efforts?.value ?? {})
+      ) {
+        entry.provider_efforts = draft.providerEfforts;
       }
       if (
         draft.defaultProvider !== undefined &&
@@ -575,15 +591,17 @@ export function SettingsModal({
     }
     setAgentDraft((prev) =>
       Object.fromEntries(
-        Object.entries(next).map(([id, draft]) => [
-          id,
-          {
-            ...draft,
-            providerModels: prev[id]?.clear
-              ? agentRows.find((a) => a.id === id)?.base_provider_models ?? {}
-              : prev[id]?.providerModels,
-          },
-        ]),
+        Object.entries(next).map(([id, draft]) => {
+          const agent = agentRows.find((a) => a.id === id);
+          return [
+            id,
+            {
+              ...draft,
+              providerModels: prev[id]?.clear ? agent?.base_provider_models ?? {} : prev[id]?.providerModels,
+              providerEfforts: prev[id]?.clear ? agent?.base_provider_efforts ?? {} : prev[id]?.providerEfforts,
+            },
+          ];
+        }),
       ),
     );
   }
@@ -760,18 +778,72 @@ export function SettingsModal({
       : draft?.providerModels ?? agent.provider_models?.value ?? {};
   }
 
+  function agentEfforts(agent: HubSettingsAgentView): Record<string, string> {
+    const draft = agentDraft[agent.id];
+    return draft?.clear
+      ? agent.base_provider_efforts ?? {}
+      : draft?.providerEfforts ?? agent.provider_efforts?.value ?? {};
+  }
+
+  function withEffort(efforts: Record<string, string>, providerId: string, effort: string) {
+    const next = { ...efforts };
+    if (effort) next[providerId] = effort;
+    else delete next[providerId];
+    return next;
+  }
+
+  function effortChoicesFor(providerId: string, model: string): string[] {
+    const levels = view.providers.find((provider) => provider.id === providerId)?.efforts ?? [];
+    return effortChoices(levels, catalogs[providerId], model);
+  }
+
   function setAgentModel(agent: HubSettingsAgentView, providerId: string, raw: string) {
     const next = { ...agentModels(agent) };
     const model = raw.trim();
     if (model) next[providerId] = model;
     else delete next[providerId];
+    const efforts = agentEfforts(agent);
+    const effort = efforts[providerId] ?? "";
+    const kept = effortAfterModelChange(effort, effortChoicesFor(providerId, model));
     setAgentDraft((prev) => ({
       ...prev,
-      [agent.id]: { ...(prev[agent.id] ?? {}), providerModels: next, clear: false },
+      [agent.id]: {
+        ...(prev[agent.id] ?? {}),
+        providerModels: next,
+        ...(kept !== effort ? { providerEfforts: withEffort(efforts, providerId, kept) } : {}),
+        clear: false,
+      },
+    }));
+  }
+
+  function setAgentEffort(agent: HubSettingsAgentView, providerId: string, effort: string) {
+    const next = withEffort(agentEfforts(agent), providerId, effort);
+    setAgentDraft((prev) => ({
+      ...prev,
+      [agent.id]: { ...(prev[agent.id] ?? {}), providerEfforts: next, clear: false },
     }));
   }
 
   function renderModelField(
+    agent: HubSettingsAgentView,
+    providerId: string,
+    models: Record<string, string>,
+  ) {
+    const effort = agentEfforts(agent)[providerId] ?? "";
+    return (
+      <div className="model-effort-group">
+        {renderModelInput(agent, providerId, models)}
+        <EffortSelect
+          label={`${agent.display_name} ${providerId} 推理强度`}
+          value={effort}
+          choices={effortChoicesFor(providerId, models[providerId] ?? "")}
+          onChange={(value) => setAgentEffort(agent, providerId, value)}
+        />
+      </div>
+    );
+  }
+
+  function renderModelInput(
     agent: HubSettingsAgentView,
     providerId: string,
     models: Record<string, string>,
@@ -1172,6 +1244,7 @@ export function SettingsModal({
                               })(),
                         )}
                         modelSuggestions={(id) => (catalogs[id]?.models ?? []).map((model) => model.id)}
+                        effortChoices={effortChoicesFor}
                         onSubmit={submitRole}
                         onCancel={() => setRoleEditor(null)}
                       />

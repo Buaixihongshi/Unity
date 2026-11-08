@@ -49,7 +49,7 @@ function view(agents: HubSettingsAgentView[]): HubSettingsView {
       a2a_idle_timeout: { value: 90, source: "default" },
     },
     providers: [
-      { id: "codex", label: "Codex CLI", enabled: { value: true, source: "user" } },
+      { id: "codex", label: "Codex CLI", enabled: { value: true, source: "user" }, efforts: ["minimal", "low", "high", "ultra"] },
       { id: "claude", label: "Claude Code", enabled: { value: true, source: "user" } },
     ],
     agents,
@@ -93,6 +93,7 @@ describe("custom roles in team settings", () => {
       default_provider_id: "codex",
       fallback_provider_ids: ["claude"],
       provider_models: { codex: "gpt-5.5" },
+      provider_efforts: {},
     });
     expect(screen.queryByTestId("role-editor")).not.toBeInTheDocument();
   });
@@ -109,10 +110,10 @@ describe("custom roles in team settings", () => {
     expect(await within(form).findByRole("alert")).toHaveTextContent("冯宝宝");
   });
 
-  it("offers the CLI catalog while editing a custom role and saves the selected model", async () => {
+  it("offers the CLI catalog while editing a custom role and saves the selected model and effort", async () => {
     vi.mocked(fetchConnectionModels).mockResolvedValueOnce({
       connection_id: "codex", status: "ready", fetched_at: null, error: null,
-      models: [{ id: "gpt-5.5", label: "GPT-5.5", vendor: null }],
+      models: [{ id: "gpt-5.5", label: "GPT-5.5", vendor: null, efforts: ["low", "high"] }],
     });
     api.updateCustomAgent.mockResolvedValue(withCustom);
     render(<SettingsModal view={withCustom} onSave={vi.fn()} onClose={vi.fn()} onViewChange={vi.fn()} />);
@@ -122,10 +123,16 @@ describe("custom roles in team settings", () => {
     await waitFor(() => expect(modelInput).toHaveAttribute("list"));
     const suggestions = document.getElementById(modelInput.getAttribute("list")!);
     expect(suggestions?.querySelector('option[value="gpt-5.5"]')).not.toBeNull();
+    const effort = within(form).getByRole("combobox", { name: "Codex CLI（CLI） 推理强度" });
+    fireEvent.change(effort, { target: { value: "ultra" } });
+    // The chosen model lists only low/high, so ultra is dropped rather than sent to the CLI.
     fireEvent.change(modelInput, { target: { value: "gpt-5.5" } });
+    expect(effort).toHaveValue("");
+    expect(within(effort).getAllByRole("option").map((o) => o.getAttribute("value"))).toEqual(["", "low", "high"]);
+    fireEvent.change(effort, { target: { value: "high" } });
     fireEvent.click(within(form).getByRole("button", { name: "保存角色" }));
     await waitFor(() => expect(api.updateCustomAgent).toHaveBeenCalledWith(
-      "linglong", expect.objectContaining({ provider_models: { codex: "gpt-5.5" } }),
+      "linglong", expect.objectContaining({ provider_models: { codex: "gpt-5.5" }, provider_efforts: { codex: "high" } }),
     ));
   });
 

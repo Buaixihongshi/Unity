@@ -6,12 +6,18 @@ accepts aliases) or through a listing subcommand (`codex debug models`,
 they describe the CLI binary itself, and managed environments export provider
 config with a fixed field allowlist. Listing runs the local binary without
 sending a prompt, so it costs no model usage; results are cached per process.
+Models that list their own effort levels (Codex) carry them per entry, which
+narrows the levels the CLI accepts in general. Antigravity's listed models
+already fix their effort (`-low`/`-high` variants) or reject `--effort`, so they
+carry an empty list; only its default or a hand-typed base model takes one.
 """
 import json
 import shutil
 import subprocess
 import threading
 from datetime import datetime, timezone
+
+from backend.app.adapters.model_selection import EFFORT_LEVELS
 
 CATALOG_TIMEOUT_SECONDS = 20
 MAX_OUTPUT_BYTES = 2_000_000
@@ -25,11 +31,12 @@ class CatalogError(Exception):
     pass
 
 
-# provider id -> {"models": [(id, label)]} or {"args": [...], "format": parser name}
+# provider id -> {"models": [(id, label)]} or {"args": [...], "format": parser name};
+# "fixed_effort" marks CLIs whose listed models cannot take a separate effort.
 CATALOG_SPECS = {
     'claude': {'models': [('fable', 'Fable（最新）'), ('opus', 'Opus（最新）'), ('sonnet', 'Sonnet（最新）')]},
     'codex': {'args': ['debug', 'models'], 'format': 'codex_json'},
-    'antigravity': {'args': ['models'], 'format': 'tab_separated'},
+    'antigravity': {'args': ['models'], 'format': 'tab_separated', 'fixed_effort': True},
 }
 
 
@@ -48,6 +55,14 @@ def _entry(model_id, label):
     return dict(id=model_id, label=label[:200], vendor=None)
 
 
+def _codex_efforts(item):
+    levels = item.get('supported_reasoning_levels')
+    if not isinstance(levels, list):
+        return None
+    efforts = [level.get('effort') for level in levels if isinstance(level, dict)]
+    return [effort for effort in efforts if effort in EFFORT_LEVELS['codex']] or None
+
+
 def parse_codex_json(output):
     try:
         data = json.loads(output)
@@ -59,7 +74,14 @@ def parse_codex_json(output):
     listed = [item for item in items if isinstance(item, dict) and _valid_id(item.get('slug'))
               and item.get('visibility', 'list') == 'list']
     listed.sort(key=lambda item: item.get('priority') if isinstance(item.get('priority'), (int, float)) else 1e9)
-    return [_entry(item['slug'], item.get('display_name')) for item in listed]
+    models = []
+    for item in listed:
+        entry = _entry(item['slug'], item.get('display_name'))
+        efforts = _codex_efforts(item)
+        if efforts:
+            entry['efforts'] = efforts
+        models.append(entry)
+    return models
 
 
 def parse_tab_separated(output):
@@ -91,7 +113,11 @@ def _list_models(provider, spec):
     if completed.returncode != 0:
         raise CatalogError(f'{provider.label} 未能列出模型（退出码 {completed.returncode}）')
     output = completed.stdout[:MAX_OUTPUT_BYTES].decode('utf-8', errors='replace')
-    return _PARSERS[spec['format']](output)
+    models = _PARSERS[spec['format']](output)
+    if spec.get('fixed_effort'):
+        for model in models:
+            model['efforts'] = []
+    return models
 
 
 def cli_catalog(provider, *, scope='', refresh=False):

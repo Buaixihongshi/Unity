@@ -490,3 +490,77 @@ it("shows catalog state in the connection card without an error for CLIs that ha
   // A display name that only differs from the id by case is not repeated.
   expect(screen.getByText("GPT-5.5")).toHaveAttribute("title", "gpt-5.5");
 });
+
+const effortProviders: HubSettingsView["providers"] = baseView.providers.map((provider) => ({
+  ...provider,
+  efforts: provider.id === "codex" ? ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+    : provider.id === "claude" || provider.id === "antigravity" ? ["low", "medium", "high", "xhigh", "max"] : [],
+}));
+
+it("offers each role an effort per connection that follows the chosen model and saves it with routing", async () => {
+  vi.mocked(fetchConnectionModels).mockImplementation(async (id: string) => id === "codex"
+    ? { connection_id: id, status: "ready", fetched_at: "2026-10-28T00:00:00Z", error: null,
+        models: [{ id: "gpt-6.1-sol", label: "GPT-6.1-Sol", vendor: null, efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+                 { id: "gpt-5.5", label: "GPT-5.5", vendor: null, efforts: ["low", "medium", "high", "xhigh"] }] }
+    // Claude's list never arrives; its levels still come from the settings view.
+    : new Promise(() => {}));
+  const onSave = vi.fn();
+  const view: HubSettingsView = { ...baseView, providers: effortProviders, agents: [{ ...baseView.agents[0], default_provider_id: { value: "codex", source: "user" },
+    provider_models: { value: { codex: "gpt-6.1-sol" }, source: "user" } }] };
+  render(<SettingsModal view={view} onSave={onSave} onClose={vi.fn()} />);
+  await screen.findByRole("combobox", { name: "王也 codex 模型" });
+  const effort = screen.getByRole("combobox", { name: "王也 codex 推理强度" });
+  expect(effort).toHaveValue("");
+  expect(within(effort).getAllByRole("option").map((o) => o.getAttribute("value")))
+    .toEqual(["", "low", "medium", "high", "xhigh", "max", "ultra"]);
+  fireEvent.change(effort, { target: { value: "ultra" } });
+  expect(effort).toHaveClass("is-active");
+  // gpt-5.5 has no ultra, so switching model drops the effort back to the CLI default.
+  fireEvent.change(screen.getByRole("combobox", { name: "王也 codex 模型" }), { target: { value: "gpt-5.5" } });
+  expect(screen.getByRole("combobox", { name: "王也 codex 推理强度" })).toHaveValue("");
+  fireEvent.change(screen.getByRole("combobox", { name: "王也 codex 推理强度" }), { target: { value: "xhigh" } });
+  fireEvent.click(screen.getByRole("button", { name: /王也 备用连接/ }));
+  fireEvent.change(screen.getByRole("combobox", { name: "王也 claude 推理强度" }), { target: { value: "max" } });
+  fireEvent.click(screen.getByTestId("settings-save"));
+  expect(onSave.mock.calls[0][0].agents.wangye).toEqual({
+    provider_models: { codex: "gpt-5.5" },
+    provider_efforts: { codex: "xhigh", claude: "max" },
+  });
+});
+
+it("disables the effort pill for connections without an effort setting and resets saved efforts", async () => {
+  vi.mocked(fetchConnectionModels).mockImplementation(async (id: string) =>
+    ({ connection_id: id, status: "unsupported", models: [], fetched_at: null, error: null }));
+  const onSave = vi.fn();
+  const view: HubSettingsView = { ...baseView, providers: effortProviders, agents: [{ ...baseView.agents[0], default_provider_id: { value: "fake", source: "user" },
+    provider_efforts: { value: { claude: "high" }, source: "user" }, base_provider_efforts: {} }] };
+  render(<SettingsModal view={view} onSave={onSave} onClose={vi.fn()} />);
+  const effort = await screen.findByRole("combobox", { name: "王也 fake 推理强度" });
+  expect(effort).toBeDisabled();
+  expect(effort).toHaveDisplayValue("强度：不可调");
+  fireEvent.click(screen.getByTestId("agent-reset-wangye"));
+  fireEvent.click(screen.getByTestId("settings-save"));
+  expect(onSave.mock.calls[0][0].agents.wangye).toEqual({ clear: true });
+});
+
+it("locks the effort for a model that fixes its own and keeps it adjustable for the CLI default", async () => {
+  vi.mocked(fetchConnectionModels).mockImplementation(async (id: string) => id === "antigravity"
+    ? { connection_id: id, status: "ready", fetched_at: null, error: null,
+        models: [{ id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", vendor: null, efforts: [] }] }
+    : new Promise(() => {}));
+  const onSave = vi.fn();
+  const view: HubSettingsView = { ...baseView, providers: effortProviders, agents: [{ ...baseView.agents[0], fallback_provider_ids: { value: [], source: "user" },
+    provider_efforts: { value: { antigravity: "high" }, source: "user" } }] };
+  render(<SettingsModal view={view} onSave={onSave} onClose={vi.fn()} />);
+  const model = await screen.findByRole("combobox", { name: "王也 antigravity 模型" });
+  expect(screen.getByRole("combobox", { name: "王也 antigravity 推理强度" })).toHaveValue("high");
+  fireEvent.change(model, { target: { value: "gemini-3.8-flash-low" } });
+  const effort = screen.getByRole("combobox", { name: "王也 antigravity 推理强度" });
+  expect(effort).toHaveValue("");
+  expect(effort).toBeDisabled();
+  fireEvent.click(screen.getByTestId("settings-save"));
+  expect(onSave.mock.calls[0][0].agents.wangye).toEqual({
+    provider_models: { antigravity: "gemini-3.8-flash-low" },
+    provider_efforts: {},
+  });
+});

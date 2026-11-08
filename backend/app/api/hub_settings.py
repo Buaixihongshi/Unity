@@ -10,6 +10,7 @@ import threading
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.adapters.model_selection import EFFORT_LEVELS
 from backend.app.config.providers import load_cli_providers
 from backend.app.domain.agent_registry import CUSTOM_AGENTS_KEY, AgentRegistry, get_agent_registry
 from backend.app.settings import EXTENSION_FIELDS, AgentOverride, ProviderOverride, Settings
@@ -44,6 +45,7 @@ class AgentOverridePatch(BaseModel):
     default_provider_id: Optional[str] = None
     fallback_provider_ids: Optional[List[str]] = None
     provider_models: Optional[Dict[str, str]] = None
+    provider_efforts: Optional[Dict[str, str]] = None
     clear: Optional[bool] = None
     fallback_context_approved: Optional[bool] = None
 
@@ -62,17 +64,28 @@ class CustomAgentInput(BaseModel):
     default_provider_id: str
     fallback_provider_ids: List[str] = Field(default_factory=list)
     provider_models: Dict[str, str] = Field(default_factory=dict)
+    provider_efforts: Dict[str, str] = Field(default_factory=dict)
 
 
 MAX_CUSTOM_AGENTS = 12
 _CUSTOM_ID = re.compile(r"[a-z][a-z0-9_-]{1,31}")
-_ROUTE_KEYS = ("default_provider_id", "fallback_provider_ids", "provider_models")
+_ROUTE_KEYS = ("default_provider_id", "fallback_provider_ids", "provider_models", "provider_efforts")
 # Separators the @-mention parsers split on; an alias containing one could never match.
 _ALIAS_FORBIDDEN = frozenset("@,，、:：")
 
 
 def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=400, detail=detail)
+
+
+def _invalid_effort(provider_id: str, effort: str) -> Optional[str]:
+    """Return why an effort cannot be saved for this connection, or None."""
+    levels = EFFORT_LEVELS.get(provider_id)
+    if levels is None:
+        return f"该连接不支持推理强度：{provider_id}"
+    if effort not in levels:
+        return f"推理强度无效：{effort}"
+    return None
 
 
 def _clean_text(value: str, label: str, limit: int) -> str:
@@ -193,6 +206,7 @@ def build_router(settings: Settings) -> APIRouter:
                 "id": pid,
                 "label": p.label,
                 "enabled": {"value": value, "source": source},
+                "efforts": list(EFFORT_LEVELS.get(pid, ())),
             })
 
         file_agents = file_data.get("agents") or {}
@@ -215,6 +229,7 @@ def build_router(settings: Settings) -> APIRouter:
                 fallback_source = "committed"
                 fallback_value = base_fallback
             has_model_override = isinstance(override, dict) and "provider_models" in override
+            has_effort_override = isinstance(override, dict) and "provider_efforts" in override
             agent_list.append({
                 "id": agent.id,
                 "display_name": agent.display_name,
@@ -229,8 +244,13 @@ def build_router(settings: Settings) -> APIRouter:
                     "value": override["provider_models"] if has_model_override else agent.provider_models,
                     "source": "user" if has_model_override else "committed",
                 },
+                "provider_efforts": {
+                    "value": override["provider_efforts"] if has_effort_override else agent.provider_efforts,
+                    "source": "user" if has_effort_override else "committed",
+                },
                 "fallback_context_approved": {"value": bool(override.get("fallback_context_approved", False)) if isinstance(override, dict) else False, "source": "user" if isinstance(override, dict) and "fallback_context_approved" in override else "committed"},
                 "base_provider_models": agent.provider_models,
+                "base_provider_efforts": agent.provider_efforts,
                 "base_default_provider_id": base_default,
                 "base_fallback_provider_ids": base_fallback,
             })
@@ -271,7 +291,8 @@ def build_router(settings: Settings) -> APIRouter:
     def get_hub_settings():
         return _build_view()
 
-    def _validate_route(default: str, fallbacks: List[str], models: Dict[str, str], connections: dict) -> None:
+    def _validate_route(default: str, fallbacks: List[str], models: Dict[str, str], efforts: Dict[str, str],
+                        connections: dict) -> None:
         valid_ids = _committed_provider_ids() | set(connections)
         if default not in valid_ids:
             raise _bad_request(f"未知的主用连接：{default}")
@@ -285,6 +306,12 @@ def build_router(settings: Settings) -> APIRouter:
                 raise _bad_request(f"该连接不支持指定模型：{pid}")
             if model != model.strip() or len(model) > 200 or any(ord(c) < 32 for c in model):
                 raise _bad_request("模型 ID 无效")
+        for pid, effort in efforts.items():
+            if pid not in (default, *fallbacks):
+                raise _bad_request(f"该连接不在角色路由中：{pid}")
+            problem = _invalid_effort(pid, effort)
+            if problem:
+                raise _bad_request(problem)
         for pid in (default, *fallbacks):
             if pid in connections and not models.get(pid, "").strip():
                 raise _bad_request("API 连接需要填写模型 ID")
@@ -320,8 +347,10 @@ def build_router(settings: Settings) -> APIRouter:
         default = payload.default_provider_id
         fallbacks = list(payload.fallback_provider_ids)
         models = {pid: model for pid, model in payload.provider_models.items() if model.strip()}
-        _validate_route(default, fallbacks, models, existing.get("connections") or {})
-        profile.update(default_provider_id=default, fallback_provider_ids=fallbacks, provider_models=models)
+        efforts = {pid: effort for pid, effort in payload.provider_efforts.items() if effort}
+        _validate_route(default, fallbacks, models, efforts, existing.get("connections") or {})
+        profile.update(default_provider_id=default, fallback_provider_ids=fallbacks, provider_models=models,
+                       provider_efforts=efforts)
 
         overrides = existing.setdefault("agents", {})
         section = overrides.get(agent_id, {}) if isinstance(overrides.get(agent_id), dict) else {}
@@ -419,6 +448,11 @@ def build_router(settings: Settings) -> APIRouter:
                             raise HTTPException(status_code=400, detail=f"unsupported model provider: {pid}")
                         if model != model.strip() or len(model) > 200 or any(ord(c) < 32 for c in model):
                             raise HTTPException(status_code=400, detail="invalid model ID")
+                if ov.provider_efforts is not None:
+                    for pid, effort in ov.provider_efforts.items():
+                        problem = _invalid_effort(pid, effort) if pid in valid_ids else f"未知的连接：{pid}"
+                        if problem:
+                            raise HTTPException(status_code=400, detail=problem)
                 if ov.fallback_provider_ids is not None:
                     for pid in ov.fallback_provider_ids:
                         if pid not in valid_ids:
@@ -464,6 +498,8 @@ def build_router(settings: Settings) -> APIRouter:
                 section = agents_section.setdefault(aid, {})
                 if ov.provider_models is not None:
                     section["provider_models"] = dict(ov.provider_models)
+                if ov.provider_efforts is not None:
+                    section["provider_efforts"] = dict(ov.provider_efforts)
                 if ov.default_provider_id is not None:
                     section["default_provider_id"] = ov.default_provider_id
                 if ov.fallback_provider_ids is not None:
