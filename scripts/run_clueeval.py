@@ -57,7 +57,9 @@ def run(args) -> int:
     if problems:
         print("nothing run:\n  " + "\n  ".join(problems), file=sys.stderr)
         return 2
-    out = args.output
+    # Absolute: the orchestrated seats run their MCP server from a closed-book temp
+    # cwd; a relative db path would resolve against that temp dir and fail to open.
+    out = args.output.resolve()
     if (out / "calls.jsonl").exists():
         print(f"{out} already has calls.jsonl; pick a new --output", file=sys.stderr)
         return 2
