@@ -16,6 +16,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+from backend.app.adapters.antigravity_config import SERVER_NAME as AGY_SERVER_NAME
 from backend.app.adapters.base import CLIAdapter, TurnOutcome
 from backend.app.adapters.mcp_subprocess import MCPSubprocessAdapter
 from backend.app.adapters.turn_record import read_records
@@ -28,6 +29,8 @@ PACK = ROOT / "eval/pilots/cost-aware-v1"
 # The pilot MCP surface; a closed-book claude seat gets these and no built-in tool.
 HUB_TOOL_NAMES = ("publish_message", "log_thought", "read_context", "invoke_agent")
 CLAUDE_HUB_TOOLS = tuple("mcp__yiren_hub__" + name for name in HUB_TOOL_NAMES)
+# agy file-read tool names across releases; only reads of its hub schema files are waived.
+AGY_FILE_READ_TOOLS = ("view_file", "read_file")
 
 
 class IsolatedCLI(MCPSubprocessAdapter):
@@ -146,13 +149,15 @@ class Ledger:
 def audit_transport_reads(diagnostics_dir, turn_id, native):
     """agy discovers MCP tools by reading its own generated schema files.
 
-    Permit only exact transport schema paths, never arbitrary view_file calls.
+    Permit only exact transport schema paths, never arbitrary file reads.
+    agy 1.5.x reports them as read_file/Path under the workspace plugin's
+    server (unity_hub since #118); older builds used view_file/AbsolutePath.
     Missing/truncated trace is insufficient evidence to waive a file read.
     """
     if not native:
         return [], 0
-    allowed_parent = Path.home() / ".gemini/antigravity-cli/mcp/yiren_hub"
-    schema_names = {name + ".json" for name in ("publish_message", "read_context", "log_thought", "invoke_agent")}
+    allowed_parent = Path.home() / ".gemini/antigravity-cli/mcp" / AGY_SERVER_NAME
+    schema_names = {name + ".json" for name in HUB_TOOL_NAMES}
     safe_reads = 0
     for path in Path(diagnostics_dir).glob("*.json"):
         diagnostic = json.loads(path.read_text())
@@ -163,16 +168,17 @@ def audit_transport_reads(diagnostics_dir, turn_id, native):
                 step = json.loads(line).get("step_update", {})
             except (ValueError, AttributeError):
                 continue
-            if step.get("tool_name") != "view_file" or step.get("state") not in ("ACTIVE", "DONE"):
+            if step.get("tool_name") not in AGY_FILE_READ_TOOLS or step.get("state") not in ("ACTIVE", "DONE"):
                 continue
-            target = step.get("tool_info", {}).get("parameters", {}).get("AbsolutePath")
+            parameters = step.get("tool_info", {}).get("parameters", {})
+            target = parameters.get("AbsolutePath", parameters.get("Path"))
             if isinstance(target, str):
                 target = Path(target)
                 if target.parent == allowed_parent and target.name in schema_names:
                     safe_reads += 1
-    prohibited = [name for name in native if name != "view_file"]
-    if native.count("view_file") != safe_reads:
-        prohibited.append("view_file outside audited MCP schemas")
+    prohibited = [name for name in native if name not in AGY_FILE_READ_TOOLS]
+    if sum(native.count(name) for name in AGY_FILE_READ_TOOLS) != safe_reads:
+        prohibited.append("file read outside audited MCP schemas")
     return prohibited, safe_reads
 
 

@@ -93,16 +93,23 @@ def test_cli_arguments_pin_models_and_disable_codex_native_delegation():
 
 
 def test_only_transport_schema_reads_are_exempted_from_file_read_policy(tmp_path):
-    target = Path.home() / ".gemini/antigravity-cli/mcp/yiren_hub/publish_message.json"
-    raw = {"event": "step_update", "step_update": {"tool_name": "view_file", "state": "DONE", "tool_info": {"parameters": {"AbsolutePath": str(target)}}}}
-    diagnostic = {"turn_id": "t", "stdout_truncated": False, "stdout_tail": json.dumps(raw)}
-    (tmp_path / "diag.json").write_text(json.dumps(diagnostic))
-    assert audit_transport_reads(tmp_path, "t", ["view_file"]) == ([], 1)
-    raw["step_update"]["tool_info"]["parameters"]["AbsolutePath"] = str(ROOT / "eval/pilots/cost-aware-v1/tasks.json")
-    diagnostic["stdout_tail"] = json.dumps(raw)
-    (tmp_path / "diag.json").write_text(json.dumps(diagnostic))
-    assert audit_transport_reads(tmp_path, "t", ["view_file"])[0]
-    assert audit_transport_reads(tmp_path, "t", ["run_command"])[0]
+    schema = Path.home() / ".gemini/antigravity-cli/mcp/unity_hub/publish_message.json"
+
+    def audit(tool, key, target, native, states=("DONE",)):
+        lines = [json.dumps({"event": "step_update", "step_update": {
+            "tool_name": tool, "state": state, "tool_info": {"name": tool, "parameters": {key: str(target)}}}})
+            for state in states]
+        diagnostic = {"turn_id": "t", "stdout_truncated": False, "stdout_tail": "\n".join(lines)}
+        (tmp_path / "diag.json").write_text(json.dumps(diagnostic))
+        return audit_transport_reads(tmp_path, "t", native)
+
+    # agy 1.5.3 as recorded in the 2026-11-09 q1 run: read_file/Path, ACTIVE then DONE.
+    assert audit("read_file", "Path", schema, ["read_file", "read_file"], ("ACTIVE", "DONE")) == ([], 2)
+    assert audit("view_file", "AbsolutePath", schema, ["view_file"]) == ([], 1)
+    assert audit("read_file", "Path", ROOT / "eval/pilots/cost-aware-v1/tasks.json", ["read_file"])[0]
+    legacy = Path.home() / ".gemini/antigravity-cli/mcp/yiren_hub/publish_message.json"
+    assert audit("read_file", "Path", legacy, ["read_file"])[0]
+    assert audit("read_file", "Path", schema, ["run_command"])[0]
 
 
 def test_protocol_debugging_costs_are_not_reset_on_new_experiment(tmp_path):
