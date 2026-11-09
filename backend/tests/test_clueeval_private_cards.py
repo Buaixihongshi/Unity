@@ -1,4 +1,7 @@
 import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -461,3 +464,77 @@ def test_call_stats_sum_tokens_and_keep_cost_missing_when_a_cli_gives_none(tmp_p
 def test_usage_extraction_keeps_numbers_only():
     assert C._usage({"input_tokens": 3, "cached": True, "server_tool_use": {"x": 1}}) == {"input_tokens": 3}
     assert C._usage(None) is None and C._usage({}) is None
+
+
+def test_clean_call_stderr_keeps_no_home_or_temp_path(monkeypatch):
+    # The reproduction from #144: a valid Codex call whose stderr warns with the home path.
+    home = str(Path.home())
+    warn = (f'WARN codex_core::shell_snapshot: Failed to delete shell snapshot at AbsolutePathBuf("{home}/.codex/'
+            'shell_snapshots/abc.sh") other=' + "/".join(["", "Users", "someone", "x"])
+            + ' tmp=/var/folders/zz/T/clueeval-call-1/last.txt\n')
+
+    def run(cmd, cwd, **kwargs):
+        Path(cmd[cmd.index("-o") + 1]).write_text("answer")
+        proc = _Proc(CODEX_CLEAN)
+        proc.stderr = "y" * 590 + warn
+        return proc
+
+    monkeypatch.setattr(C.subprocess, "run", run)
+    result = _respond("codex")
+    tail = result["stderr_tail"]
+    assert result["valid"] is True and len(tail) <= 600
+    assert home not in tail and "/Users/" not in tail and "/var/folders" not in tail
+    assert '"~/.codex/shell_snapshots/abc.sh"' in tail and "<tmp>" in tail
+    assert C.stderr_tail(b"err " + home.encode() + b"/a") == "err ~/a"
+    # Cutting first would start the tail inside the home path and keep the end of the user name.
+    assert C.stderr_tail(home + "/" + "b" * 595) == "~/" + "b" * 595
+
+
+def test_agy_deny_list_uses_only_actions_the_cli_accepts():
+    # agy 1.5.3 drops unknown actions with a warning (#145): browser(*) and search_web(*) never blocked anything.
+    accepted = re.compile(r"^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\s*\(.*\)$")
+    assert all(accepted.match(rule) for rule in C.AGY_DENY)
+
+
+def test_agy_call_is_invalid_when_the_cli_ignores_a_deny_entry(monkeypatch):
+    log = AGY_LOG + '\nW permission_grant_store.go:526] ignoring invalid deny entry "x(*)": unknown action "x"'
+    _fake_cli(monkeypatch, AGY_CLEAN, log=log)
+    result = _respond("antigravity")
+    assert result["valid"] is False and result["invalid_reasons"] == ["deny rule ignored by CLI"]
+
+
+def test_agy_search_web_step_voids_the_call(monkeypatch):
+    # The step shape from formal-20261109-1: search_web ran (DONE), nothing blocked it.
+    step = {"step_type": "tool", "tool_name": "search_web", "state": "DONE",
+            "tool_info": {"name": "search_web", "parameters": {"query": "clueeval"}}}
+    _fake_cli(monkeypatch, _jsonl({"event": "init"}, {"event": "step_update", "step_update": step}, AGY_RESULT))
+    result = _respond("antigravity")
+    assert result["valid"] is False and "step tool:search_web" in result["invalid_reasons"]
+
+
+def _cli(*args, cwd):
+    script = Path(__file__).resolve().parents[2] / "scripts/run_clueeval.py"
+    return subprocess.run([sys.executable, str(script), *args], cwd=cwd, capture_output=True, text=True, timeout=120)
+
+
+def test_default_solo_full_selection_is_refused_before_any_call(tmp_path):
+    # The reproduction from #148: the default selection includes the English item; it used to stop after 8 calls.
+    out = tmp_path / "solo"
+    proc = _cli("run", "--mode", "fixture", "--condition", "solo_full", "--output", str(out), cwd=tmp_path)
+    assert proc.returncode == 2 and "hb-009-critical_hospital_transfer/solo_full" in proc.stderr
+    assert not out.exists()
+    proc = _cli("run", "--mode", "fixture", "--question", "nope", "--output", str(out), cwd=tmp_path)
+    assert proc.returncode == 2 and "unknown question nope" in proc.stderr and not out.exists()
+
+
+def test_solo_full_on_the_chinese_selection_finishes_the_batch(tmp_path):
+    out = tmp_path / "solo"
+    qids = ["q1-storage", "q2-rootcause", "hb-009-critical_hospital_transfer-zh"]
+    args = [a for qid in qids for a in ("--question", qid)]
+    proc = _cli("run", "--mode", "fixture", "--condition", "solo_full", "--games", "2", *args, "--output", str(out),
+                cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["finished_at"] and manifest["invalid_games"] == 0
+    calls = (out / "calls.jsonl").read_text().splitlines()
+    assert len(calls) == len(qids) * len(C.DEFAULT_ROSTER) * 2

@@ -13,12 +13,12 @@
 
 - `questions.json`：只放题面、共享材料、私卡和候选项。加载时如果发现 `correct_answer`、`rationale` 这类答案侧字段，直接拒绝。
 - `answer_key.json`：正解、诱饵和出题理由。只有 `run_clueeval.py score` 会读这个文件，跑题阶段不读。
-- 每次调用都必须无工具。三家 CLI 都改成逐条输出事件，`cli_responder` 逐条检查：出现工具事件，或者无法确认没用工具（缺 init/result 事件、退出码非 0、空回复、Antigravity 日志里看不到禁用规则生效），这次调用就记为无效，附上 `invalid_reasons`。CLI 超时或启动失败（如命令不存在）同样记为无效调用，只留错误类型、errno 和 stderr 末尾，不记异常原文里的路径；其他应答器异常按 `responder raised <类型>` 记。这一局随即停下，记录 `valid=false` 和原因后写盘，批次继续跑下一局；`score` 不计入，单独列在 `invalid_games` 里。
+- 每次调用都必须无工具。三家 CLI 都改成逐条输出事件，`cli_responder` 逐条检查：出现工具事件，或者无法确认没用工具（缺 init/result 事件、退出码非 0、空回复、Antigravity 日志里看不到禁用规则生效），这次调用就记为无效，附上 `invalid_reasons`。CLI 超时或启动失败（如命令不存在）同样记为无效调用，只留错误类型、errno 和 stderr 末尾，不记异常原文里的路径；所有调用的 stderr 末尾都先把家目录换成 `~`、临时目录换成 `<tmp>` 再截取（#144）；其他应答器异常按 `responder raised <类型>` 记。这一局随即停下，记录 `valid=false` 和原因后写盘，批次继续跑下一局；`score` 不计入，单独列在 `invalid_games` 里。
 - 每次调用都会记录初始上下文里实际找到了哪几张卡（`cards_in_initial_context`）。找到的卡和本席位分到的卡不一致时，CLI 启动前就会报错停下。别人的私卡只能经由讨论记录、在持卡人发过言之后才出现（`cards_in_transcript`）。
 
 ## 协议
 
-- 条件：`private`（每席一张私卡讨论）、`shared_only`（只给共享材料）、`solo_full`（单人基线：一个席位拿共享材料加全部私卡，只答一次，不讨论）。`solo_full` 会让路由里的每个角色各自单独作答，自制题用 solo-v4 全材料条件的【补充材料】写法，HiddenBench 题把全部条目接在共享列表后面。
+- 条件：`private`（每席一张私卡讨论）、`shared_only`（只给共享材料）、`solo_full`（单人基线：一个席位拿共享材料加全部私卡，只答一次，不讨论）。`solo_full` 只支持中文题；所选题目里只要有不支持的题号/条件组合，`run` 在任何调用之前就整批拒绝，返回 2（#148）。`solo_full` 会让路由里的每个角色各自单独作答，自制题用 solo-v4 全材料条件的【补充材料】写法，HiddenBench 题把全部条目接在共享列表后面。
 - 席位的推理强度取路由里该角色当前 provider 的 `provider_efforts`：Claude 传 `--effort`，Codex 传 `-c model_reasoning_effort=…`；Antigravity 模型名自带强度，不另外传参。
 - 每次调用记录 CLI 自报的 token 计数（`meta.usage`）；只有 Claude 会报费用（`meta.cost_usd`），其余记为缺失。`score` 的 `calls` 按局、按 provider 汇总调用数、无效调用数、调用耗时、token 和费用。
 - **结论层级**：这是直接调用各 CLI 的固定轮流讨论，不经过 Unity 的编排（角色人设、publish_message、invoke_agent、记忆）。它能回答“这几个 CLI 按日常路由和参数、在结构化讨论里拼私卡有没有收益”，不能直接代表 Unity 聊天室里的协作表现。manifest 记为 `harness_layer=direct-cli-round-robin`。
@@ -40,7 +40,8 @@
 - 各家禁用工具的做法（#140，均已用“读当前目录 canary 文件”的探针实测）：
   - Claude：`--tools ""`，init 事件里工具和 MCP 列表都为空，回合数为 1。
   - Codex：`-s read-only` 只限制写入，不禁命令；改前实测能执行 `ls` 并读出 canary。现在用 `--disable` 关掉 shell、unified_exec、code mode 等能执行代码或访问外部的功能，并关掉 web_search 和 MCP。关掉 code mode 后，每次调用开头固定有一条 `error` 通知，这一条按原文放行；除此之外，凡是不属于 `agent_message`/`reasoning` 的条目，都判为无效。
-  - Antigravity：没有关闭工具的开关，日常设置还是 `always-proceed`；改前实测会执行 `ls`、`read_file` 读出 canary。现在用 `--settings` 临时改成 `strict`，并拒绝命令、读写文件、MCP、网址和浏览器。实测主代理和它拉起的子代理都被拦下。即使工具被拦，只要出现工具或子代理步骤，这一局照样判无效。
+  - Antigravity：没有关闭工具的开关，日常设置还是 `always-proceed`；改前实测会执行 `ls`、`read_file` 读出 canary。现在用 `--settings` 临时改成 `strict`，并拒绝命令、读写文件、MCP、读取/执行/下载网址。实测主代理和它拉起的子代理读文件都被拦下。即使工具被拦，只要出现工具或子代理步骤，这一局照样判无效。
+  - **Antigravity 的联网搜索拦不住**（#145）：agy 1.5.3 的拒绝规则只认 `command`、`read_file`、`write_file`、`read_url`、`mcp`、`execute_url`、`download_url`、`unsandboxed` 这几类，别的条目会在日志里写一句 `ignoring invalid deny entry` 然后忽略。原清单里的 `browser(*)` 一直没生效，`search_web(*)` 也加不进去。联网 canary 实测：`search_web` 照常执行完成，只能靠步骤检测把这次调用判无效、整局作废。所以 HiddenBench 这类公网有原题的题目，Antigravity 席位一旦联网就会出现无效局；现在日志里只要出现被忽略的拒绝条目，调用也判为无效。
 - 以上是用禁用加事件检测兜底，不是文件系统隔离：答案文件仍在本机磁盘上。CLI 版本升级后，新增的工具未必在禁用清单里；靠的是“没见过的事件一律判无效”来兜底，升级后要先重跑探针。
 - `answer_key_opened_by_harness` 只说明脚本自己跑题时没打开答案文件，不是对 CLI 子进程的访问审计。
 - #140 之前的产物（如 `smoke-real-1`）没有 `valid` 字段，`score` 会全部列为无效。那批 Antigravity 的 `tool_calls_in_log=0` 不能作为没用工具的证据：实测表明，即使真的读了文件，这个正则也计 0。

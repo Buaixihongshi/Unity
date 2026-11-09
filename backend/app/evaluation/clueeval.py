@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -146,13 +147,20 @@ def render_transcript(q: dict, transcript: List[dict]) -> str:
     return "\n\n".join(f"{label} {m['seat'] + 1}: {m['text'].strip()}" for m in transcript)
 
 
+def unsupported(q: dict, condition: str) -> Optional[str]:
+    """Why this question cannot run under this condition, or None; checked before any CLI starts."""
+    if condition == "solo_full" and q["lang"] == "en":
+        return "solo_full runs only on the pinned Chinese versions"
+    return None
+
+
 def phase_prompt(q: dict, context: str, phase: str, seat: int, n: int, transcript: List[dict],
                  round_no: int = 0, rounds: int = 0) -> str:
     k = seat + 1
     log = render_transcript(q, transcript)
     if q["lang"] == "en":
         if phase == "solo":
-            raise ValueError("solo_full runs only on the pinned Chinese versions")
+            raise ValueError(unsupported(q, "solo_full"))
         vote = ('Please decide and provide your rationale in the following JSON format: '
                 '{"vote": "<one of: ' + ", ".join(q["options"]) + '>", "rationale": "<your reasoning>"}')
         if phase == "pre":
@@ -245,10 +253,12 @@ CODEX_DISABLED_FEATURES = ("shell_tool", "unified_exec", "code_mode_host", "apps
                            "memories", "hooks", "skill_search", "tool_suggest", "goals", "sleep_tool")
 # Emitted on every call once code_mode_host is off; the only non-message item a clean call may carry.
 CODEX_CODE_MODE_NOTICE = "Code Mode is unavailable because code-mode host is disabled"
-# Antigravity cannot drop its tools, so every tool class is denied. The daily settings may say
-# always-proceed; --settings overrides that for this call only.
+# Antigravity cannot drop its tools, so every tool class it can gate is denied. The daily settings may say
+# always-proceed; --settings overrides that for this call only. agy 1.5.3 accepts only command, read_file,
+# write_file, read_url, mcp, execute_url, download_url and unsandboxed here and silently ignores anything else,
+# so search_web cannot be denied at all (#145): a search still runs and only the step check below catches it.
 AGY_DENY = ("command(*)", "read_file(*)", "read_file(/)", "write_file(*)", "mcp(*)", "read_url(*)",
-            "execute_url(*)", "browser(*)")
+            "execute_url(*)", "download_url(*)")
 AGY_SETTINGS = json.dumps({"toolPermission": "strict", "permissions": {"deny": list(AGY_DENY)}})
 
 
@@ -353,9 +363,11 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
                 detail.append({"step": step.get("step_type"), "tool": step.get("tool_name"), "state": step.get("state"),
                                "args": json.dumps(info.get("parameters", info), ensure_ascii=False)[:200],
                                "error": ((info.get("error") or {}).get("message") or "")[:200]})
-    # The deny rules only count if the CLI says it loaded them.
+    # The deny rules only count if the CLI says it loaded them and dropped none of them.
     if not log_text or "toolPermission=strict" not in log_text or "Deny:[" + " ".join(AGY_DENY) + "]" not in log_text:
         violations.append("deny rules not confirmed in log")
+    elif "ignoring invalid deny entry" in log_text:
+        violations.append("deny rule ignored by CLI")
     if result is None:
         violations.append("no result event")
         return None, {}, violations
@@ -367,12 +379,27 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
     return result.get("response"), meta, violations
 
 
-def failed_call(reason: str, seconds: Optional[float] = None, stderr=None) -> dict:
-    """A call that produced no usable answer; kept as an invalid record instead of an exception."""
+_TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/[^\s\"'()<>]*")
+_HOME_PATH = re.compile(r"/(?:Users|home)/[^/\s\"'()<>]+")
+
+
+def stderr_tail(stderr) -> str:
+    """Last 600 chars of stderr with home and temp paths replaced, so call records carry no local paths (#144).
+
+    Paths are replaced before cutting, so the cut cannot leave the tail of a path behind."""
     if isinstance(stderr, bytes):
         stderr = stderr.decode(errors="replace")
+    text = stderr or ""
+    for root, label in ((tempfile.gettempdir(), "<tmp>"), (os.path.realpath(tempfile.gettempdir()), "<tmp>"),
+                        (str(Path.home()), "~")):
+        text = text.replace(root, label)
+    return _HOME_PATH.sub("~", _TMP_PATH.sub("<tmp>", text))[-600:]
+
+
+def failed_call(reason: str, seconds: Optional[float] = None, stderr=None) -> dict:
+    """A call that produced no usable answer; kept as an invalid record instead of an exception."""
     return {"text": None, "rc": None, "seconds": seconds, "meta": {"failure": reason}, "valid": False,
-            "invalid_reasons": [reason], "stderr_tail": (stderr or "")[-600:]}
+            "invalid_reasons": [reason], "stderr_tail": stderr_tail(stderr)}
 
 
 def cli_responder(timeout: int = 600) -> Responder:
@@ -410,7 +437,7 @@ def cli_responder(timeout: int = 600) -> Responder:
             if not text:
                 violations.append("empty response")
             return {"text": text, "rc": proc.returncode, "seconds": seconds, "meta": meta,
-                    "valid": not violations, "invalid_reasons": violations, "stderr_tail": proc.stderr[-600:]}
+                    "valid": not violations, "invalid_reasons": violations, "stderr_tail": stderr_tail(proc.stderr)}
     return respond
 
 

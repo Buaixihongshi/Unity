@@ -9,8 +9,10 @@ Examples:
     python3 scripts/run_clueeval.py run --mode real --routing <hub_settings.json> --rounds 2 \
         --output output/clueeval/smoke
 
-    # Single-agent baseline: every routed role alone with all materials, 3 repeats each:
+    # Single-agent baseline: every routed role alone with all materials, 3 repeats each.
+    # solo_full runs only on the Chinese versions; any English question in the selection stops the run up front:
     python3 scripts/run_clueeval.py run --mode real --routing <hub_settings.json> --condition solo_full --games 3 \
+        --question q1-storage --question q2-rootcause --question hb-009-critical_hospital_transfer-zh \
         --output output/clueeval/solo
 
     # Score afterwards; this is the only step that opens the answer key:
@@ -47,6 +49,13 @@ def _cli_version(command: str) -> str:
 def run(args) -> int:
     questions = C.load_questions(args.questions)
     selected = args.question or list(questions)
+    # Refuse the whole selection before any call: a mid-batch stop would leave paid calls and no finished manifest.
+    problems = [f"unknown question {qid}" for qid in selected if qid not in questions]
+    problems += [f"{qid}/{condition}: {why}" for qid in selected if qid in questions for condition in args.condition
+                 for why in [C.unsupported(questions[qid], condition)] if why]
+    if problems:
+        print("nothing run:\n  " + "\n  ".join(problems), file=sys.stderr)
+        return 2
     out = args.output
     if (out / "calls.jsonl").exists():
         print(f"{out} already has calls.jsonl; pick a new --output", file=sys.stderr)
