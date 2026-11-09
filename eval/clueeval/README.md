@@ -28,6 +28,13 @@
 - 自制题沿用 SPEC 的做法，告诉参与者“队友手里的材料可能和你不同”。HiddenBench 题按论文 §3.1 不作告知：私卡直接追加在共享材料列表的末尾，不单独标注；最终答案用 `{"vote", "rationale"}` 格式的 JSON。
 - 席位按日常角色路由入座：楚岚、宝宝、王也，第四席是陆玲珑。模型取自 `--routing` 指定的 hub_settings；产物只记录摘要，不记录路径。
 
+## 编排模式（`--mode orchestrated`）
+
+- 同一批题、同一套提示与评分，但每个席位调用改经 Unity 编排执行：每局一个 mission，每次发言由 MissionRunner 调度为一次 agent 回合，座位 CLI 闭卷运行、只开放 yiren_hub MCP 工具（publish_message、log_thought、read_context、invoke_agent），回合、消息与用量落在本次运行独立的 `hub/eval.sqlite3`；发言内容取自聊天室里已发布的消息。manifest 记为 `harness_layer=unity-orchestrated`。
+- 与直连批次的差异如实入 manifest：席位获得中性人格与宿主规则、共享会话里能看到彼此已发布的消息（提示内转写仍然保留，两份并存）；pre/final 回合在同一 mission 上串行执行（直连为并行，只影响墙钟）；费用为调用前预留的软门（`--limit-usd`，冻结 API 等价费率，不是硬上限、不是账单）。
+- 限制：只支持 codex 与 antigravity 座位（隔离 MCP 子进程机器暂不驱动 claude）；座位模型必须能在 cost-aware-v1 定价表里按 `provider:模型` 命中，未定价直接报错而不是按 0 计费；`--a2a-budget` 大于 0 才开放 invoke_agent 接力。
+- 链路自检不调模型：`backend/tests/test_clueeval_orchestrated.py` 用假 CLI 走通全流程、私卡不串座、费用门熔断与无效发布判定。
+
 ## HiddenBench 来源
 
 - 数据集：`YuxuanLi1225/HiddenBench`，MIT License，作者 Yuxuan Li 等。论文：arXiv:2505.11556。
