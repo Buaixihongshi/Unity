@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import sys
@@ -570,6 +571,76 @@ def test_other_quote_kind_inside_a_quoted_path_keeps_no_name(monkeypatch, q, r):
     _fake_roots(monkeypatch, me, "/scratch/review-run")
     assert C.stderr_tail(f"{q}/scratch/review-run{q}") == f"{q}<tmp>{q}"
     assert "<tmp>" not in C.stderr_tail(f"{q}/scratch/review-run{r}Brien/f{q}")
+
+
+@pytest.mark.parametrize("q", ['"', "'"])
+@pytest.mark.parametrize("prefix", ["b", "B", "rb", "br", "$"])
+def test_prefixed_quoted_path_keeps_no_name(monkeypatch, prefix, q):
+    # #144 review of 47d3eeb: a quote right after b (Python's repr of a bytes path) was taken for an apostrophe in a
+    # word, so b'.../reviewer Private/work/x' stayed unquoted and gave b'~ Private/work/x'.
+    me, tmp = _USERS + "reviewer", "/tmp/review-run"
+    _fake_roots(monkeypatch, me, tmp)
+    for raw, clean in ((f"{prefix}{q}{me} Private/work/x{q}", f"{prefix}{q}~/work/x{q}"),
+                       (f"{prefix}{q}{tmp} Private/file.txt{q}", f"{prefix}{q}<tmp>{q}"),
+                       (f"{prefix}{q}{_USERS}Jane Doe/x{q}", f"{prefix}{q}~/x{q}"),
+                       (f"{prefix}{q}/var/folders/zz/T Private/f{q}", f"{prefix}{q}<tmp>{q}"),
+                       (f"open: {prefix}{q}{me} Private/a{q}, {prefix}{q}{tmp}/b{q}", f"open: {prefix}{q}~/a{q}, {prefix}{q}<tmp>/b{q}")):
+        tail = C.stderr_tail(raw)
+        assert tail == clean and "Private" not in tail and "Jane" not in tail
+    # Scrubbed before the cut, so the cut cannot start inside the spaced name.
+    tail = C.stderr_tail(f"{prefix}{q}{me} Private/" + "b" * 596 + q)
+    assert tail == f"{q}~/" + "b" * 596 + q and "Private" not in tail
+
+
+def test_a_letter_ending_a_word_does_not_open_a_quoted_stretch(monkeypatch):
+    # The prefix must be a token of its own: Bob's, ab'... and x$'... keep the apostrophe inside the word.
+    me = _USERS + "reviewer"
+    _fake_roots(monkeypatch, me, "/tmp/review-run")
+    for word in ("Bob's", "Rob's", "can't", "O'Brien", "x$'s"):
+        assert C.stderr_tail(f"{word} {me}/a") == f"{word} ~/a"
+    # Were "Bob's" read as b'...', the stretch would run to the next ' and swallow the real quoted path's opener.
+    assert C.stderr_tail(f"Bob's file '{me} Private/x'") == "Bob's file '~/x'"
+    # Only b, rb and br count as prefixes, not any short word: "he" is a token of its own too.
+    assert C.stderr_tail(f"he's at '{me} Private/x'") == "he's at '~/x'"
+
+
+def _bytes_path_error(path: str) -> str:
+    # The text Python itself writes for a bytes path, so the fixture follows the real representation.
+    try:
+        os.stat(path.encode())
+    except OSError as e:
+        return f"Traceback (most recent call last):\nFileNotFoundError: {e}\n"
+    raise AssertionError("path exists")
+
+
+def test_bytes_path_error_is_scrubbed_in_clean_and_timed_out_calls(tmp_path, monkeypatch):
+    # #144 review of 47d3eeb: Python error text with a bytes path, on a clean call and on a timeout, both written.
+    me = _USERS + "reviewer"
+    # Only the home is faked: the responder makes its real per-call temp dir.
+    monkeypatch.setattr(C.Path, "home", classmethod(lambda cls: Path(me)))
+    err = _bytes_path_error(f"{me} Private/work/x")
+    assert f"b'{me} Private/work/x'" in err
+
+    def clean(cmd, cwd, **kwargs):
+        Path(cmd[cmd.index("-o") + 1]).write_text("answer")
+        proc = _Proc(CODEX_CLEAN)
+        proc.stderr = "y" * 590 + err
+        return proc
+
+    def stalled(cmd, cwd, **kwargs):
+        raise C.subprocess.TimeoutExpired(cmd, kwargs["timeout"], stderr=("y" * 590 + err).encode())
+
+    for run, valid in ((clean, True), (stalled, False)):
+        monkeypatch.setattr(C.subprocess, "run", run)
+        out = tmp_path / run.__name__
+        out.mkdir()
+        seats = [C.Seat(i, f"r{i}", "codex", "m") for i in range(3)]
+        C.run_game(QUESTIONS["q1-storage"], 0, "private", 1, seats, C.cli_responder(timeout=5), C.GameWriter(out))
+        logged = [json.loads(line) for line in (out / "calls.jsonl").read_text().splitlines()]
+        assert logged and all(c["valid"] is valid for c in logged)
+        assert all("b'~/work/x'" in c["stderr_tail"] for c in logged)
+        text = (out / "calls.jsonl").read_text() + "".join(p.read_text() for p in (out / "games").glob("*"))
+        assert "Private" not in text and "reviewer" not in text
 
 
 def test_agy_deny_list_uses_only_actions_the_cli_accepts():
