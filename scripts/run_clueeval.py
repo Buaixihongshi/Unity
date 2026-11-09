@@ -89,7 +89,7 @@ def run(args) -> int:
         manifest["a2a_budget"] = args.a2a_budget
         manifest["limit_usd"] = args.limit_usd
         manifest["hard_spend_limit"] = False
-        manifest["serialized_phases"] = "pre/final turns run serially on one mission; direct mode ran them in parallel"
+        manifest["serialized_phases"] = H.SERIALIZED_NOTE
     if args.mode in ("real", "orchestrated"):
         manifest["cli_versions"] = {c: _cli_version(c) for c in ("claude", "codex", "agy")}
         # These files reach the model besides our prompt; recorded so runs stay comparable.

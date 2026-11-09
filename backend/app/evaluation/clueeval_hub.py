@@ -66,6 +66,14 @@ LAYER_NOTE = (
     "direct round-robin batch."
 )
 
+# Manifest wording for the phase layout; kept beside SHARED_PHASES so the
+# evidence text cannot drift from what respond() actually does (#154).
+SERIALIZED_NOTE = (
+    "pre/final turns run one at a time, each in its own isolated one-seat mission "
+    "(A2A off); only discussion turns share the per-game mission. "
+    "Direct mode ran pre/final in parallel."
+)
+
 
 def _mode(participants, a2a_budget: int) -> OrchestrationMode:
     """An isolated answer is a one-seat mission; a table with relays on is dynamic."""

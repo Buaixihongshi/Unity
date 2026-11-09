@@ -138,6 +138,9 @@ def test_full_game_through_hub(harness, tmp_path):
     # Discussion turns share the game mission; each pre/final answer has its own (#151).
     assert all((row["meta"]["hub"]["mission_id"] == game.mission.id) == (row["phase"] == "discuss") for row in rows)
     assert len({row["meta"]["hub"]["mission_id"] for row in rows if row["phase"] != "discuss"}) == n * 2
+    # The manifest wording says the same as the layout just observed (#154).
+    assert "isolated" in H.SERIALIZED_NOTE and "on one mission" not in H.SERIALIZED_NOTE
+    assert "serialized_phases\"] = H.SERIALIZED_NOTE" in (ROOT / "scripts" / "run_clueeval.py").read_text()
     assert all(row["valid"] for row in rows)
     # Billing: one priced usage row per host call, on the hub ledger file only.
     hub_rows = [json.loads(line) for line in ledger.path.read_text().splitlines()]
