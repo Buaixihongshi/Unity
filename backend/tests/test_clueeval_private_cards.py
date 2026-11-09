@@ -541,6 +541,37 @@ def test_quoted_sibling_of_a_known_root_with_a_space_keeps_no_name(monkeypatch, 
     assert "<tmp>" not in C.stderr_tail(f"{q}/scratch/review-run Private/f{q}")
 
 
+@pytest.mark.parametrize("q,r", [('"', "'"), ("'", '"')])
+def test_other_quote_kind_inside_a_quoted_path_keeps_no_name(monkeypatch, q, r):
+    # #144 review of 342ff6e: either quote kind closed a quoted stretch, so a quoted O'Brien home gave "~'Brien/...".
+    me, tmp = _USERS + "reviewer", "/tmp/review-run"
+    _fake_roots(monkeypatch, me, tmp)
+    for raw, clean in ((f"{q}{me} O{r}Brien/work/x{q}", f"{q}~/work/x{q}"),
+                       (f"{q}{tmp} O{r}Brien/file.txt{q}", f"{q}<tmp>{q}"),
+                       (f"{q}{_USERS}Jane O{r}Brien/x{q}", f"{q}~/x{q}"),
+                       (f"{q}{_HOMES}Jane O{r}Brien/x{q}", f"{q}~/x{q}"),
+                       (f"{q}/var/folders/zz/T O{r}Brien/f{q}", f"{q}<tmp>{q}"),
+                       # A sibling whose name goes on with the other quote kind is not the known root.
+                       (f"{q}{me}{r}Brien/work/x{q}", f"{q}~/work/x{q}"),
+                       # The outer quote escaped inside its own stretch is part of the name, not its end.
+                       (f"{q}{me} O\\{q}Brien/work/x{q}", f"{q}~/work/x{q}"),
+                       (f"{q}{tmp} O\\{q}Brien/f{q}", f"{q}<tmp>{q}"),
+                       # An apostrophe in a word before the path does not open a stretch of its own.
+                       (f"can't open {q}{me} O{r}Brien/x{q} now", f"can't open {q}~/x{q} now"),
+                       (f"{q}{me}/a{q} {q}{tmp} O{r}Brien/b{q} {me}-private/c", f"{q}~/a{q} {q}<tmp>{q} ~/c")):
+        tail = C.stderr_tail(raw)
+        assert tail == clean and "Brien" not in tail and "Jane" not in tail
+    # Scrubbed before the cut: the cut cannot start inside the other user's name.
+    assert C.stderr_tail(f"{q}{me} O{r}Brien/" + "b" * 596 + q) == f"{q}~/" + "b" * 596 + q
+    # A quoted temp path is replaced whole, so a long one leaves nothing for the cut either.
+    tail = C.stderr_tail("a" * 596 + f" {q}{tmp} O{r}Brien/" + "b" * 596 + q)
+    assert tail == ("a" * 596 + f" {q}<tmp>{q}")[-600:] and "Brien" not in tail
+    # A root no generic pattern knows ends only at its own outer quote, not at the other kind.
+    _fake_roots(monkeypatch, me, "/scratch/review-run")
+    assert C.stderr_tail(f"{q}/scratch/review-run{q}") == f"{q}<tmp>{q}"
+    assert "<tmp>" not in C.stderr_tail(f"{q}/scratch/review-run{r}Brien/f{q}")
+
+
 def test_agy_deny_list_uses_only_actions_the_cli_accepts():
     # agy 1.5.3 drops unknown actions with a warning (#145): browser(*) and search_web(*) never blocked anything.
     accepted = re.compile(r"^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\s*\(.*\)$")

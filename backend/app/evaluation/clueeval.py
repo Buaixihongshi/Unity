@@ -383,23 +383,26 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
 _PATH_END = r"\s\"'()<>"
 _TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/(?:\\.|[^%s\\])*" % _PATH_END)
 _HOME_PATH = re.compile(r"/(?:Users|home)/(?:\\.|[^/%s\\])+" % _PATH_END)
-_QUOTED = re.compile(r"(\"[^\"\n]*\"|'[^'\n]*')")
-_QUOTED_TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/[^\"'\n]*")
-_QUOTED_HOME_PATH = re.compile(r"/(?:Users|home)/[^/\"'\n]+")
+# A quote opens a stretch only at a token start, so the apostrophe in "can't" or O'Brien does not; inside a
+# stretch a backslash escapes the next char, and only the outer quote kind closes it, so a ' inside "..." is part
+# of the name (#144).
+_QUOTED = re.compile(r"""((?<![\w\\])"(?:\\.|[^"\\\n])*"|(?<![\w\\])'(?:\\.|[^'\\\n])*')""")
 # Where a known root ends. Outside quotes whitespace ends a path; inside quotes it is part of the directory name,
 # so home `reviewer` must not eat `reviewer Private` there, nor a sibling `reviewer-private` anywhere.
 _ROOT_END = r"/%s:,;`\]}" % _PATH_END
-_QUOTED_ROOT_END = r"/\"'"
 
 
-def _scrub_segment(text: str, quoted: bool) -> str:
+def _scrub_segment(text: str, quote: str = "") -> str:
+    """Scrub one stretch; `quote` is the stretch's outer quote, empty outside quotes."""
+    end = "/" + re.escape(quote) if quote else _ROOT_END
     for root, label in ((tempfile.gettempdir(), "<tmp>"), (os.path.realpath(tempfile.gettempdir()), "<tmp>"),
                         (str(Path.home()), "~")):
-        end = _QUOTED_ROOT_END if quoted else _ROOT_END
         text = re.sub(re.escape(root) + r"(?=[%s]|$)" % end, label, text, flags=re.M)
-    if quoted:
-        return _QUOTED_HOME_PATH.sub("~", _QUOTED_TMP_PATH.sub("<tmp>", text))
-    return _HOME_PATH.sub("~", _TMP_PATH.sub("<tmp>", text))
+    if not quote:
+        return _HOME_PATH.sub("~", _TMP_PATH.sub("<tmp>", text))
+    body = r"(?:\\.|[^%s\\\n])" % re.escape(quote)
+    text = re.sub(r"/(?:private/)?(?:var/folders|tmp)/%s*" % body, "<tmp>", text)
+    return re.sub(r"/(?:Users|home)/(?:\\.|[^/%s\\\n])+" % re.escape(quote), "~", text)
 
 
 def stderr_tail(stderr) -> str:
@@ -410,7 +413,7 @@ def stderr_tail(stderr) -> str:
     if isinstance(stderr, bytes):
         stderr = stderr.decode(errors="replace")
     parts = _QUOTED.split(stderr or "")  # odd items are the quoted stretches, quotes included
-    return "".join(_scrub_segment(part, i % 2 == 1) for i, part in enumerate(parts))[-600:]
+    return "".join(_scrub_segment(part, part[0] if i % 2 else "") for i, part in enumerate(parts))[-600:]
 
 
 def failed_call(reason: str, seconds: Optional[float] = None, stderr=None) -> dict:
