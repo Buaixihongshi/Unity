@@ -383,32 +383,34 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
 _PATH_END = r"\s\"'()<>"
 _TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/(?:\\.|[^%s\\])*" % _PATH_END)
 _HOME_PATH = re.compile(r"/(?:Users|home)/(?:\\.|[^/%s\\])+" % _PATH_END)
-_QUOTED = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'")
+_QUOTED = re.compile(r"(\"[^\"\n]*\"|'[^'\n]*')")
 _QUOTED_TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/[^\"'\n]*")
 _QUOTED_HOME_PATH = re.compile(r"/(?:Users|home)/[^/\"'\n]+")
+# Where a known root ends. Outside quotes whitespace ends a path; inside quotes it is part of the directory name,
+# so home `reviewer` must not eat `reviewer Private` there, nor a sibling `reviewer-private` anywhere.
+_ROOT_END = r"/%s:,;`\]}" % _PATH_END
+_QUOTED_ROOT_END = r"/\"'"
 
 
-def _root_pattern(root: str) -> re.Pattern:
-    """A known root only where it ends a directory name: home `reviewer` must not eat a sibling `reviewer-private`."""
-    return re.compile(re.escape(root) + r"(?=[/%s:,;`\]}]|$)" % _PATH_END, re.M)
-
-
-def _scrub_quoted(match: re.Match) -> str:
-    return _QUOTED_HOME_PATH.sub("~", _QUOTED_TMP_PATH.sub("<tmp>", match.group(0)))
+def _scrub_segment(text: str, quoted: bool) -> str:
+    for root, label in ((tempfile.gettempdir(), "<tmp>"), (os.path.realpath(tempfile.gettempdir()), "<tmp>"),
+                        (str(Path.home()), "~")):
+        end = _QUOTED_ROOT_END if quoted else _ROOT_END
+        text = re.sub(re.escape(root) + r"(?=[%s]|$)" % end, label, text, flags=re.M)
+    if quoted:
+        return _QUOTED_HOME_PATH.sub("~", _QUOTED_TMP_PATH.sub("<tmp>", text))
+    return _HOME_PATH.sub("~", _TMP_PATH.sub("<tmp>", text))
 
 
 def stderr_tail(stderr) -> str:
     """Last 600 chars of stderr with home and temp paths replaced, so call records carry no local paths (#144).
 
-    Paths are replaced before cutting, so the cut cannot leave the tail of a path behind."""
+    Quoted and unquoted stretches are scrubbed separately, so a root match never runs across a quote, and paths
+    are replaced before cutting, so the cut cannot leave the tail of a path behind."""
     if isinstance(stderr, bytes):
         stderr = stderr.decode(errors="replace")
-    text = stderr or ""
-    for root, label in ((tempfile.gettempdir(), "<tmp>"), (os.path.realpath(tempfile.gettempdir()), "<tmp>"),
-                        (str(Path.home()), "~")):
-        text = _root_pattern(root).sub(label, text)
-    text = _QUOTED.sub(_scrub_quoted, text)
-    return _HOME_PATH.sub("~", _TMP_PATH.sub("<tmp>", text))[-600:]
+    parts = _QUOTED.split(stderr or "")  # odd items are the quoted stretches, quotes included
+    return "".join(_scrub_segment(part, i % 2 == 1) for i, part in enumerate(parts))[-600:]
 
 
 def failed_call(reason: str, seconds: Optional[float] = None, stderr=None) -> dict:

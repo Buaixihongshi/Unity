@@ -523,6 +523,24 @@ def test_stderr_tail_keeps_no_part_of_a_path_with_spaces(monkeypatch):
     assert C.stderr_tail(f'"{_USERS}Other Name/' + "b" * 596 + '"') == '"~/' + "b" * 596 + '"'
 
 
+@pytest.mark.parametrize("q", ['"', "'"])
+def test_quoted_sibling_of_a_known_root_with_a_space_keeps_no_name(monkeypatch, q):
+    # #144 review of cf5c872: the known root was replaced first with a space as its end, giving "~ Private/...".
+    me, tmp = _USERS + "reviewer", "/tmp/review-run"
+    _fake_roots(monkeypatch, me, tmp)
+    assert C.stderr_tail(f"open {q}{me} Private/work/x{q} failed") == f"open {q}~/work/x{q} failed"
+    assert C.stderr_tail(f"{q}{tmp} Private/file.txt{q}") == f"{q}<tmp>{q}"
+    # The roots themselves inside quotes, and a sibling outside them, are unchanged by the split.
+    assert C.stderr_tail(f"{q}{me}/a{q} {q}{tmp}/b{q} {me}-private/c") == f"{q}~/a{q} {q}<tmp>/b{q} ~/c"
+    # Scrubbed before the cut: the cut cannot start inside the sibling's name.
+    tail = C.stderr_tail(f"{q}{me} Private/" + "b" * 596 + q)
+    assert tail == f"{q}~/" + "b" * 596 + q and "Private" not in tail
+    # A root no generic pattern knows: inside quotes it still ends at the quote, and a spaced sibling is not it.
+    _fake_roots(monkeypatch, me, "/scratch/review-run")
+    assert C.stderr_tail(f"{q}/scratch/review-run{q}") == f"{q}<tmp>{q}"
+    assert "<tmp>" not in C.stderr_tail(f"{q}/scratch/review-run Private/f{q}")
+
+
 def test_agy_deny_list_uses_only_actions_the_cli_accepts():
     # agy 1.5.3 drops unknown actions with a warning (#145): browser(*) and search_web(*) never blocked anything.
     accepted = re.compile(r"^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\s*\(.*\)$")
