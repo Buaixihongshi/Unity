@@ -379,8 +379,22 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
     return result.get("response"), meta, violations
 
 
-_TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/[^\s\"'()<>]*")
-_HOME_PATH = re.compile(r"/(?:Users|home)/[^/\s\"'()<>]+")
+# Unquoted paths end at whitespace unless it is backslash-escaped; quoted paths run to the closing quote (#144).
+_PATH_END = r"\s\"'()<>"
+_TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/(?:\\.|[^%s\\])*" % _PATH_END)
+_HOME_PATH = re.compile(r"/(?:Users|home)/(?:\\.|[^/%s\\])+" % _PATH_END)
+_QUOTED = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'")
+_QUOTED_TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/[^\"'\n]*")
+_QUOTED_HOME_PATH = re.compile(r"/(?:Users|home)/[^/\"'\n]+")
+
+
+def _root_pattern(root: str) -> re.Pattern:
+    """A known root only where it ends a directory name: home `reviewer` must not eat a sibling `reviewer-private`."""
+    return re.compile(re.escape(root) + r"(?=[/%s:,;`\]}]|$)" % _PATH_END, re.M)
+
+
+def _scrub_quoted(match: re.Match) -> str:
+    return _QUOTED_HOME_PATH.sub("~", _QUOTED_TMP_PATH.sub("<tmp>", match.group(0)))
 
 
 def stderr_tail(stderr) -> str:
@@ -392,7 +406,8 @@ def stderr_tail(stderr) -> str:
     text = stderr or ""
     for root, label in ((tempfile.gettempdir(), "<tmp>"), (os.path.realpath(tempfile.gettempdir()), "<tmp>"),
                         (str(Path.home()), "~")):
-        text = text.replace(root, label)
+        text = _root_pattern(root).sub(label, text)
+    text = _QUOTED.sub(_scrub_quoted, text)
     return _HOME_PATH.sub("~", _TMP_PATH.sub("<tmp>", text))[-600:]
 
 

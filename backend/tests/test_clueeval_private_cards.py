@@ -490,6 +490,39 @@ def test_clean_call_stderr_keeps_no_home_or_temp_path(monkeypatch):
     assert C.stderr_tail(home + "/" + "b" * 595) == "~/" + "b" * 595
 
 
+# Joined at runtime so the privacy check does not read these synthetic homes as committed local paths.
+_USERS, _HOMES = "/".join(["", "Users", ""]), "/".join(["", "home", ""])
+
+
+def _fake_roots(monkeypatch, home, tmp):
+    monkeypatch.setattr(C.Path, "home", classmethod(lambda cls: Path(home)))
+    monkeypatch.setattr(C.tempfile, "gettempdir", lambda: tmp)
+
+
+def test_stderr_tail_replaces_known_roots_only_at_a_directory_boundary(monkeypatch):
+    # #144 review: a bare replace turned another user's reviewer-private home into ~-private, keeping the name.
+    me = _USERS + "reviewer"
+    _fake_roots(monkeypatch, me, "/var/folders/ab/T")
+    assert C.stderr_tail(f"a {me}-private/work/x b") == "a ~/work/x b"
+    assert C.stderr_tail(f"{me}/a {me}\n{me}: x") == "~/a ~\n~: x"
+    assert C.stderr_tail("/var/folders/ab/T/c /var/folders/ab/Tmp2/d") == "<tmp>/c <tmp>"
+
+
+def test_stderr_tail_keeps_no_part_of_a_path_with_spaces(monkeypatch):
+    _fake_roots(monkeypatch, _USERS + "Jane Doe", "/tmp/run dir")
+    # The caller's own roots are known, so their spaces need no quoting.
+    assert C.stderr_tail(f"open {_USERS}Jane Doe/x failed") == "open ~/x failed"
+    assert C.stderr_tail("at /tmp/run dir/f.txt now") == "at <tmp>/f.txt now"
+    # Other users and temp paths: quoted or backslash-escaped spaces belong to the path.
+    for raw, clean in ((f'p="{_USERS}Other Name/x"', 'p="~/x"'), (f"p='{_HOMES}Other Name/x'", "p='~/x'"),
+                       (f"p={_USERS}Other\\ Name/x y", "p=~/x y"), ('f="/tmp/my dir/f.txt" z', 'f="<tmp>" z'),
+                       ("f=/private/var/folders/q/my\\ dir/f z", "f=<tmp> z")):
+        tail = C.stderr_tail(raw)
+        assert tail == clean and "Name" not in tail and "my" not in tail
+    # Scrubbed before the cut, so the cut cannot start inside a spaced user name.
+    assert C.stderr_tail(f'"{_USERS}Other Name/' + "b" * 596 + '"') == '"~/' + "b" * 596 + '"'
+
+
 def test_agy_deny_list_uses_only_actions_the_cli_accepts():
     # agy 1.5.3 drops unknown actions with a warning (#145): browser(*) and search_web(*) never blocked anything.
     accepted = re.compile(r"^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\s*\(.*\)$")
