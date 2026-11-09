@@ -57,15 +57,18 @@ class IsolatedCLI(MCPSubprocessAdapter):
 
 
 def model_args(model):
+    """CLI argv for one billed model; the effort is the entry's, omitted when empty (CLI default)."""
+    effort = model.get("reasoning_effort") or ""
     if model["provider"] == "codex":
         args = ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
-                "--model", model["cli_model_id"], "-c", 'model_reasoning_effort="low"',
+                "--model", model["cli_model_id"],
+                *(["-c", f'model_reasoning_effort="{effort}"'] if effort else []),
                 "-c", 'approval_policy="never"', "-c", 'web_search="disabled"']
         for feature in ("multi_agent", "shell_tool", "apps", "plugins", "hooks", "memories", "browser_use", "image_generation"):
             args += ["--disable", feature]
         return "codex", args
     if model["provider"] == "antigravity":
-        return "agy", ["--model", model["cli_model_id"], "--effort", model["reasoning_effort"],
+        return "agy", ["--model", model["cli_model_id"], *(["--effort", effort] if effort else []),
                        "--disable-slash-commands", "--output-format", "stream-json", "--dangerously-skip-permissions", "-p"]
     raise ValueError("Unexpected provider; no fallback permitted")
 
