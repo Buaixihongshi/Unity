@@ -58,7 +58,7 @@ def run(args) -> int:
         return 2
     manifest = {
         "started_at": datetime.now(timezone.utc).isoformat(), "mode": args.mode, "rounds": args.rounds,
-        "games": args.games, "conditions": args.condition, "questions": selected,
+        "games": args.game_index or args.games, "conditions": args.condition, "questions": selected,
         "git_head": _git("rev-parse", "HEAD"), "git_dirty": bool(_git("status", "--porcelain")),
         "questions_sha256": C.sha256_bytes(args.questions.read_bytes()),
         "harness_sha256": C.sha256_bytes(Path(C.__file__).read_bytes()),
@@ -77,6 +77,8 @@ def run(args) -> int:
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     writer = C.GameWriter(out)
     invalid = 0
+    # A rerun of a voided game keeps its game number, so its card rotation and speaking order stay the same.
+    game_indices = args.game_index or list(range(args.games))
     for qid in selected:
         q = questions[qid]
         respond = C.cli_responder(args.cli_timeout) if args.mode == "real" else C.fixture_responder(q)
@@ -92,7 +94,7 @@ def run(args) -> int:
             (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
             tables = [[C.Seat(0, s.role, s.provider, s.model, s.effort)] for s in seats] \
                 if condition == "solo_full" else [seats]
-            for game, table in ((g, t) for g in range(args.games) for t in tables):
+            for game, table in ((g, t) for g in game_indices for t in tables):
                 record = C.run_game(q, game, condition, args.rounds, table, respond, writer)
                 print(record["game"], [(s["card"], s["pre_pick"], s["final_pick"]) for s in record["seats"]],
                       "" if record["valid"] else f"INVALID: {record['invalid_reason']}", flush=True)
@@ -114,6 +116,8 @@ def main() -> int:
     r.add_argument("--question", action="append", help="Question id; repeatable; default all")
     r.add_argument("--condition", action="append", choices=C.CONDITIONS, help="Repeatable; default private")
     r.add_argument("--games", type=int, default=1)
+    r.add_argument("--game-index", type=int, action="append",
+                   help="Run only these game numbers (repeatable), e.g. to rerun a voided game; overrides --games")
     r.add_argument("--rounds", type=int, default=3)
     r.add_argument("--routing", type=Path, help="hub_settings.json whose role routes and models seat the table")
     r.add_argument("--cli-timeout", type=int, default=600)
