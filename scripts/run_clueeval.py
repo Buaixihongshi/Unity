@@ -111,10 +111,12 @@ def run(args) -> int:
         settings.artifact_root.mkdir(exist_ok=True)
         repository = Repository(settings.database_path)
         repository.initialize()
-        protocol_models = json.loads((PACK / "protocol.json").read_text())["models"]
+        protocol_models = H.priced_models(json.loads((PACK / "protocol.json").read_text())["models"])
         hub = {"settings": settings, "repository": repository, "protocol_models": protocol_models,
                "ledger": H.HubLedger(out, {}, args.limit_usd)}
-        manifest["hub_models_pricing"] = "cost-aware-v1 frozen API-equivalent rates; not a CLI invoice"
+        manifest["hub_models_pricing"] = ("cost-aware-v1 frozen API-equivalent rates plus eval/clueeval/pricing.json; "
+                                          "no cache discount; not a CLI invoice")
+        manifest["hub_pricing_sha256"] = C.sha256_bytes(H.PRICING_PATH.read_bytes())
     # A rerun of a voided game keeps its game number, so its card rotation and speaking order stay the same.
     game_indices = args.game_index or list(range(args.games))
     for qid in selected:
@@ -136,8 +138,8 @@ def run(args) -> int:
                 if args.mode == "real":
                     respond = C.cli_responder(args.cli_timeout)
                 elif args.mode == "orchestrated":
-                    if any(s.provider not in ("codex", "antigravity") for s in table):
-                        print(f"{qid}/{condition}: orchestrated mode drives codex/antigravity seats only; "
+                    if any(s.provider not in H.SEAT_PROVIDERS for s in table):
+                        print(f"{qid}/{condition}: orchestrated mode drives {'/'.join(H.SEAT_PROVIDERS)} seats only; "
                               f" routed {[s.role + '=' + s.provider for s in table]}", file=sys.stderr)
                         return 2
                     hub["ledger"].models.update(H.seat_models(table, hub["protocol_models"]))

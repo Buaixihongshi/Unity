@@ -21,11 +21,12 @@ relays. What this layer does NOT change: the phase prompts (the harness
 transcript is still embedded, so the hub conversation is a duplicate record,
 not the only channel), and the game's validity rules.
 
-Claude seats are rejected: the isolated MCP subprocess machinery (real_pilot)
-only drives codex and antigravity today.
+Seats run on their daily routes for claude, codex and antigravity alike; each
+CLI's closed-book setup and its checks live in real_pilot.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -51,6 +52,12 @@ from backend.app.settings import Settings
 from backend.app.storage.repository import Repository
 
 HARNESS_LAYER = "unity-orchestrated"
+
+# CLIs real_pilot can run closed-book behind the hub.
+SEAT_PROVIDERS = ("claude", "codex", "antigravity")
+
+# Rates for daily routes the frozen cost-aware-v1 table lacks (claude, gemini -high).
+PRICING_PATH = ROOT / "eval/clueeval/pricing.json"
 
 # The only phase whose turns see each other in the hub; pre/final/solo are
 # independent answers and get an isolated mission each (#151).
@@ -90,6 +97,20 @@ class HubLedger(Ledger):
         self.path = Path(output) / "hub_calls.jsonl"
 
 
+class HubBudgetedAdapter(BudgetedAdapter):
+    """Seat turns keep the daily idle rule: none on a seat's own turn, the A2A window on a relay.
+
+    The pilot's flat 45 s cut killed opus at max effort mid-thought: thinking
+    deltas do not count as activity, and such a turn can think longer than that.
+    The hard timeout (--cli-timeout) still bounds every call.
+    """
+
+    def idle_timeout(self, tools):
+        if getattr(tools, "current_step_origin", None) in {"a2a", "a2a_resume"}:
+            return self.runner.settings.a2a_idle_timeout
+        return 0
+
+
 class GameRunner(MissionRunner):
     """One planned step per harness call: the current seat's phase turn.
 
@@ -121,9 +142,9 @@ class OrchestratedGame:
     def __init__(self, q: dict, gid: str, seats, *, settings: Settings,
                  repository: Repository, ledger: HubLedger, a2a_budget: int = 0, factory=None):
         for seat in seats:
-            if seat.provider not in ("codex", "antigravity"):
+            if seat.provider not in SEAT_PROVIDERS:
                 raise ValueError(
-                    f"seat {seat.role}: orchestrated mode drives codex/antigravity, got {seat.provider}")
+                    f"seat {seat.role}: orchestrated mode drives {'/'.join(SEAT_PROVIDERS)}, got {seat.provider}")
         self.gid, self.seats = gid, seats
         self.repository, self.settings, self.ledger = repository, settings, ledger
         self.a2a_budget, self.factory = a2a_budget, factory
@@ -196,8 +217,8 @@ class OrchestratedGame:
         with self._lock:
             if self._stopped:
                 return self._invalid([f"game stopped: {self._stopped}"], None, 0.0)
-            adapter = BudgetedAdapter(SimpleNamespace(settings=self.settings), self.ledger,
-                                      self.condition, factory=self.factory or IsolatedCLI)
+            adapter = HubBudgetedAdapter(SimpleNamespace(settings=self.settings), self.ledger,
+                                         self.condition, factory=self.factory or IsolatedCLI)
             step = WorkflowStep(seat.role, prompt)
             target, participants, a2a_budget = self._mission_for(seat, phase)
             runner = GameRunner(self.repository, self.settings, adapter, agent_registry=self.registry,
@@ -241,16 +262,31 @@ class OrchestratedGame:
                 "valid": False, "invalid_reasons": reasons}
 
 
+def priced_models(protocol_models: dict) -> dict:
+    """The frozen cost-aware-v1 entries plus this pack's supplement; no entry overrides another."""
+    extra = json.loads(PRICING_PATH.read_text())["models"]
+    clash = sorted(set(extra) & set(protocol_models))
+    if clash:
+        raise ValueError("pricing supplement redefines: " + ", ".join(clash))
+    return {**protocol_models, **extra}
+
+
 def seat_models(seats, protocol_models: dict) -> dict:
     """Per-role billing entries for the spend gate, keyed by seat role.
 
-    Rates come from the frozen cost-aware-v1 table; the CLI effort is the
+    Rates come from the frozen tables (priced_models); the CLI effort is the
     routed seat's, empty when the route sets none, so the argv matches the
     direct batch (#153). An unknown seat model is an error, not a silent
     zero: the spend gate is only honest with real rates.
     """
-    table = {f"{m['provider']}:{m['cli_model_id']}": m for m in protocol_models.values()
-             if m.get("provider") in ("codex", "antigravity")}
+    table = {}
+    for m in protocol_models.values():
+        if m.get("provider") not in SEAT_PROVIDERS:
+            continue
+        key = f"{m['provider']}:{m['cli_model_id']}"
+        if key in table:
+            raise ValueError(f"two pricing entries for {key}")
+        table[key] = m
     models = {}
     for seat in seats:
         entry = table.get(f"{seat.provider}:{seat.model}")

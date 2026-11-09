@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from backend.app.adapters.base import TurnOutcome
+from backend.app.adapters.turn_record import TurnRecord
 from backend.app.domain.models import TurnStatus
 from backend.app.evaluation import clueeval as C
 from backend.app.evaluation import clueeval_hub as H
-from backend.app.evaluation.real_pilot import ROOT
+from backend.app.evaluation.real_pilot import CLAUDE_HUB_TOOLS, ROOT, BudgetedAdapter, Ledger, model_args
 from backend.app.mcp.tools import MCPToolError
 from backend.app.settings import Settings
 from backend.app.storage.repository import Repository
@@ -208,11 +210,134 @@ def test_unpublished_turn_is_invalid(harness, tmp_path):
     assert rows and rows[0]["valid"] is False
 
 
-def test_claude_seat_rejected(harness):
-    seats = [C.Seat(0, "chulan", "claude", "claude-x", "")]
+def test_unsupported_seat_provider_rejected(harness):
+    seats = [C.Seat(0, "chulan", "gemini", "gemini-x", "")]
     _, make = harness(seats)
-    with pytest.raises(ValueError, match="codex/antigravity"):
+    with pytest.raises(ValueError, match="claude/codex/antigravity"):
         make(QUESTIONS["q1-storage"], "x", seats)
+
+
+class ClaudeStreamCLI(FakeCLI):
+    """A claude seat: records its stream as the real adapter does, then publishes and bills."""
+
+    init_tools = list(CLAUDE_HUB_TOOLS[:3])  # what --tools "" left in the real probe (A2A off)
+    blocks = [{"type": "thinking", "thinking": ""},
+              {"type": "tool_use", "name": "mcp__yiren_hub__publish_message", "input": {}}]
+    record_init = True
+
+    def run_turn(self, mission_id, agent_id, turn_id, provider_id, prompt, tools):
+        record = TurnRecord(tools.repository.database_path, mission_id=mission_id, turn_id=turn_id,
+                            agent_id=agent_id, provider_id=provider_id, route="chat")
+        if self.record_init:
+            record.stream("stdout", json.dumps({"type": "system", "subtype": "init", "model": "claude-opus-5-5",
+                                                "tools": self.init_tools,
+                                                "mcp_servers": [{"name": "yiren_hub", "status": "connected"}]}))
+        record.stream("stdout", json.dumps({"type": "assistant", "message": {"content": self.blocks}}))
+        record.finish(exit_code=0)
+        return super().run_turn(mission_id, agent_id, turn_id, provider_id, prompt, tools)
+
+
+def claude_table(n):
+    return [C.Seat(i, role, "claude", "opus", "max") for i, role in enumerate(C.DEFAULT_ROSTER[:n])]
+
+
+def test_claude_seats_play_a_closed_book_game(harness, tmp_path):
+    q = QUESTIONS["q1-storage"]
+    seats = claude_table(len(q["cards"]))
+    ledger, make = harness(seats, factory_cli=ClaudeStreamCLI)
+    record = C.run_game(q, 0, "private", 1, seats, make(q, "claude-g0", seats).respond, C.GameWriter(tmp_path))
+
+    assert record["valid"], record["invalid_reason"]
+    assert len(ledger.calls) == len(seats) * 3
+    assert all(call["prohibited_native_tools"] == [] for call in ledger.calls)
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"init_tools": [*CLAUDE_HUB_TOOLS[:3], "WebSearch"]}, "claude tools beyond the hub: WebSearch"),
+    ({"record_init": False}, "claude init event not recorded"),
+    ({"blocks": [{"type": "server_tool_use", "name": "web_search", "input": {}}]},
+     "claude content block server_tool_use web_search"),
+])
+def test_claude_turn_that_is_not_provably_closed_book_voids_the_game(harness, tmp_path, change, reason):
+    q = QUESTIONS["q1-storage"]
+    seats = claude_table(len(q["cards"]))
+    leaky = type("LeakyClaudeCLI", (ClaudeStreamCLI,), change)
+    ledger, make = harness(seats, factory_cli=leaky)
+    record = C.run_game(q, 0, "private", 1, seats, make(q, "leak-g0", seats).respond, C.GameWriter(tmp_path))
+
+    assert not record["valid"]
+    assert reason in record["invalid_reason"]
+    assert len(FakeCLI.calls) == 1  # the gate stops at the first such turn
+    assert reason in ledger.calls[0]["prohibited_native_tools"]
+
+
+def test_claude_seat_argv_is_closed_book():
+    models = H.seat_models([C.Seat(0, "chulan", "claude", "opus", "max")], H.priced_models(PROTOCOL_MODELS))
+    command, args = model_args(models["chulan"])
+    assert command == "claude"
+    assert args[args.index("--model") + 1] == "opus" and args[args.index("--effort") + 1] == "max"
+    assert args[args.index("--tools") + 1] == ""  # no built-in tool: files, shell, web, subagents
+    assert args[args.index("--allowedTools") + 1].split(",") == list(CLAUDE_HUB_TOOLS)
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--include-partial-messages" in args  # tool calls arrive named, for the native-tool check
+    assert "--dangerously-skip-permissions" not in args
+    assert args[-1] == "-p"  # the adapter appends the prompt right after it
+    # No routed effort: no flag, the CLI default, as for codex and agy.
+    unset = H.seat_models([C.Seat(0, "chulan", "claude", "opus", "")], H.priced_models(PROTOCOL_MODELS))
+    assert "--effort" not in model_args(unset["chulan"])[1]
+
+
+def test_claude_cost_bills_cache_reads_and_writes_as_input(tmp_path):
+    rates = {"input_usd_per_million": 4, "output_usd_per_million": 20}
+    ledger = Ledger(tmp_path, {"c": {**rates, "provider": "claude"}, "x": {**rates, "provider": "codex"}}, 10)
+    # The real probe call's usage: claude keeps 13911 cache tokens outside input_tokens.
+    usage = {"input_tokens": 4, "cached_input_tokens": 6839, "cache_creation_input_tokens": 7072, "output_tokens": 4153}
+    assert float(ledger.cost("c", usage)) == pytest.approx(0.13872)
+    # codex counts cached tokens inside input_tokens; adding them again would double-bill.
+    assert float(ledger.cost("x", usage)) == pytest.approx((4 * 4 + 4153 * 20) / 1e6)
+    # The pre-call reservation carries no cache counters and still prices.
+    assert ledger.cost("c", {"input_tokens": 36000, "output_tokens": 4500}) > 0
+    with pytest.raises(ValueError, match="cache_creation_input_tokens"):
+        ledger.cost("c", {**usage, "cache_creation_input_tokens": -1})
+
+
+def test_seat_models_price_the_daily_routes():
+    # The daily table: claude opus at max, codex at high, agy on the -high model.
+    seats = [C.Seat(0, "chulan", "claude", "opus", "max"), C.Seat(1, "baobao", "codex", "gpt-6.1-sol", "high"),
+             C.Seat(2, "wangye", "antigravity", "gemini-3.8-flash-high", "")]
+    models = H.seat_models(seats, H.priced_models(PROTOCOL_MODELS))
+    assert models["chulan"]["model_id"] == "claude-opus-5-5" and models["chulan"]["reasoning_effort"] == "max"
+    assert models["wangye"]["output_usd_per_million"] == PROTOCOL_MODELS["economy"]["output_usd_per_million"]
+    with pytest.raises(ValueError, match="no pricing"):
+        H.seat_models([C.Seat(0, "chulan", "claude", "sonnet", "")], H.priced_models(PROTOCOL_MODELS))
+    # The supplement adds rows; it may not quietly reprice a frozen one.
+    with pytest.raises(ValueError, match="redefines"):
+        H.priced_models({"claude-opus": PROTOCOL_MODELS["strong"]})
+    with pytest.raises(ValueError, match="two pricing entries"):
+        H.seat_models(seats[1:2], {"a": PROTOCOL_MODELS["strong"], "b": PROTOCOL_MODELS["strong"]})
+
+
+def test_seat_turns_follow_the_daily_idle_rule(harness):
+    # A flat 45 s idle cut killed opus/max mid-thought in the real probe: thinking is not activity.
+    settings = SimpleNamespace(settings=SimpleNamespace(a2a_idle_timeout=90))
+    hub = H.HubBudgetedAdapter(settings, None, {})
+    assert hub.idle_timeout(SimpleNamespace(current_step_origin=None)) == 0
+    assert hub.idle_timeout(SimpleNamespace(current_step_origin="a2a")) == 90
+    assert hub.idle_timeout(SimpleNamespace(current_step_origin="a2a_resume")) == 90
+    assert BudgetedAdapter(settings, None, {}).idle_timeout(None) == 45  # cost-aware pilot unchanged
+    # And the seat adapter is built with it.
+    seats = [C.Seat(0, "chulan", "codex", "gpt-6.1-sol", "high")]
+    built = []
+
+    class Capture(FakeCLI):
+        def __init__(self, command, args, **kwargs):
+            built.append(kwargs)
+
+    _, make = harness(seats)
+    game = make(QUESTIONS["q1-storage"], "idle-g0", seats)
+    game.factory = Capture
+    assert game.respond(seats[0], "solo", "单人作答")["valid"]
+    assert built and built[0]["idle_timeout"] == 0
 
 
 def test_seat_models_follow_routed_effort():
