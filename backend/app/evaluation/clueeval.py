@@ -385,9 +385,11 @@ _TMP_PATH = re.compile(r"/(?:private/)?(?:var/folders|tmp)/(?:\\.|[^%s\\])*" % _
 _HOME_PATH = re.compile(r"/(?:Users|home)/(?:\\.|[^/%s\\])+" % _PATH_END)
 # A quote opens a stretch only at a token start, so the apostrophe in "can't" or O'Brien does not; inside a
 # stretch a backslash escapes the next char, and only the outer quote kind closes it, so a ' inside "..." is part
-# of the name (#144). A bytes literal (b'...', how Python reprs a bytes path in an error) or a shell $'...' also
-# opens one: the prefix stays outside the stretch, but only when it is a whole token itself, so "Bob's" does not.
-_QUOTE_START = r"(?:(?<![\w\\$])|(?<=(?<![\w\\$])(?:[bB]|\$))|(?<=(?<![\w\\$])(?:[bB][rR]|[rR][bB])))"
+# of the name (#144). A Python string prefix (b'...' is how Python reprs a bytes path in an error; r"..." and the
+# rest show up in traceback source lines) or a shell $'...' also opens one: the prefix stays outside the stretch,
+# but only when it is a whole token itself, so "Bob's" does not.
+_QUOTE_START = (r"(?:(?<![\w\\$])|(?<=(?<![\w\\$])(?:[bBrRuUfFtT]|\$))"
+                r"|(?<=(?<![\w\\$])(?:[rR][bBfFtT]|[bBfFtT][rR])))")
 _QUOTED = re.compile(r"""(%s"(?:\\.|[^"\\\n])*"|%s'(?:\\.|[^'\\\n])*')""" % (_QUOTE_START, _QUOTE_START))
 # Where a known root ends. Outside quotes whitespace ends a path; inside quotes it is part of the directory name,
 # so home `reviewer` must not eat `reviewer Private` there, nor a sibling `reviewer-private` anywhere.

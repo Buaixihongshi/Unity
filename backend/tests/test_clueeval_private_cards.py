@@ -574,10 +574,11 @@ def test_other_quote_kind_inside_a_quoted_path_keeps_no_name(monkeypatch, q, r):
 
 
 @pytest.mark.parametrize("q", ['"', "'"])
-@pytest.mark.parametrize("prefix", ["b", "B", "rb", "br", "$"])
+@pytest.mark.parametrize("prefix", ["b", "B", "r", "R", "u", "f", "rb", "br", "Rb", "rf", "$"])
 def test_prefixed_quoted_path_keeps_no_name(monkeypatch, prefix, q):
     # #144 review of 47d3eeb: a quote right after b (Python's repr of a bytes path) was taken for an apostrophe in a
-    # word, so b'.../reviewer Private/work/x' stayed unquoted and gave b'~ Private/work/x'.
+    # word, so b'.../reviewer Private/work/x' stayed unquoted and gave b'~ Private/work/x'. Review of 2858272: the
+    # same for a lone r, as in r"..." on a traceback source line.
     me, tmp = _USERS + "reviewer", "/tmp/review-run"
     _fake_roots(monkeypatch, me, tmp)
     for raw, clean in ((f"{prefix}{q}{me} Private/work/x{q}", f"{prefix}{q}~/work/x{q}"),
@@ -600,7 +601,7 @@ def test_a_letter_ending_a_word_does_not_open_a_quoted_stretch(monkeypatch):
         assert C.stderr_tail(f"{word} {me}/a") == f"{word} ~/a"
     # Were "Bob's" read as b'...', the stretch would run to the next ' and swallow the real quoted path's opener.
     assert C.stderr_tail(f"Bob's file '{me} Private/x'") == "Bob's file '~/x'"
-    # Only b, rb and br count as prefixes, not any short word: "he" is a token of its own too.
+    # Only Python string prefixes count, not any short word: "he" is a token of its own too.
     assert C.stderr_tail(f"he's at '{me} Private/x'") == "he's at '~/x'"
 
 
@@ -613,13 +614,22 @@ def _bytes_path_error(path: str) -> str:
     raise AssertionError("path exists")
 
 
-def test_bytes_path_error_is_scrubbed_in_clean_and_timed_out_calls(tmp_path, monkeypatch):
-    # #144 review of 47d3eeb: Python error text with a bytes path, on a clean call and on a timeout, both written.
+def _raw_path_traceback(path: str) -> str:
+    # A traceback quotes the failing source line, where a path is often written as a raw string.
+    return (f'Traceback (most recent call last):\n  File "run.py", line 3, in <module>\n'
+            f'    open(r"{path}")\nFileNotFoundError: [Errno 2] No such file or directory\n')
+
+
+@pytest.mark.parametrize("make_err, scrubbed", [(_bytes_path_error, "b'~/work/x'"),
+                                                (_raw_path_traceback, 'r"~/work/x"')])
+def test_prefixed_path_error_is_scrubbed_in_clean_and_timed_out_calls(tmp_path, monkeypatch, make_err, scrubbed):
+    # #144 reviews of 47d3eeb and 2858272: Python error text with a bytes or raw-string path, on a clean call and on
+    # a timeout, both written.
     me = _USERS + "reviewer"
     # Only the home is faked: the responder makes its real per-call temp dir.
     monkeypatch.setattr(C.Path, "home", classmethod(lambda cls: Path(me)))
-    err = _bytes_path_error(f"{me} Private/work/x")
-    assert f"b'{me} Private/work/x'" in err
+    err = make_err(f"{me} Private/work/x")
+    assert f"{scrubbed[0]}{scrubbed[1]}{me} Private/work/x{scrubbed[1]}" in err
 
     def clean(cmd, cwd, **kwargs):
         Path(cmd[cmd.index("-o") + 1]).write_text("answer")
@@ -638,7 +648,7 @@ def test_bytes_path_error_is_scrubbed_in_clean_and_timed_out_calls(tmp_path, mon
         C.run_game(QUESTIONS["q1-storage"], 0, "private", 1, seats, C.cli_responder(timeout=5), C.GameWriter(out))
         logged = [json.loads(line) for line in (out / "calls.jsonl").read_text().splitlines()]
         assert logged and all(c["valid"] is valid for c in logged)
-        assert all("b'~/work/x'" in c["stderr_tail"] for c in logged)
+        assert all(scrubbed in c["stderr_tail"] for c in logged)
         text = (out / "calls.jsonl").read_text() + "".join(p.read_text() for p in (out / "games").glob("*"))
         assert "Private" not in text and "reviewer" not in text
 
