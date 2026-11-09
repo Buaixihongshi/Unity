@@ -16,13 +16,21 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+from backend.app.adapters.antigravity_config import SERVER_NAME as AGY_SERVER_NAME
 from backend.app.adapters.base import CLIAdapter, TurnOutcome
 from backend.app.adapters.mcp_subprocess import MCPSubprocessAdapter
+from backend.app.adapters.turn_record import read_records
 from backend.app.domain.models import TurnStatus
 from backend.app.evaluation.runner import EvalConfig, EvalRunner
 
 ROOT = Path(__file__).resolve().parents[3]
 PACK = ROOT / "eval/pilots/cost-aware-v1"
+
+# The pilot MCP surface; a closed-book claude seat gets these and no built-in tool.
+HUB_TOOL_NAMES = ("publish_message", "log_thought", "read_context", "invoke_agent")
+CLAUDE_HUB_TOOLS = tuple("mcp__yiren_hub__" + name for name in HUB_TOOL_NAMES)
+# agy file-read tool names across releases; only reads of its hub schema files are waived.
+AGY_FILE_READ_TOOLS = ("view_file", "read_file")
 
 
 class IsolatedCLI(MCPSubprocessAdapter):
@@ -31,7 +39,7 @@ class IsolatedCLI(MCPSubprocessAdapter):
         # These local tools are the explicitly requested evaluation protocol.
         # Keep read-only sandboxing and never-prompt policy for native tools;
         # do not approve arbitrary MCP servers or file/command operations.
-        for name in ("publish_message", "log_thought", "read_context", "invoke_agent"):
+        for name in HUB_TOOL_NAMES:
             config += f'\n[mcp_servers.yiren_hub.tools.{name}]\napproval_mode = "approve"\n'
         return config
 
@@ -57,16 +65,28 @@ class IsolatedCLI(MCPSubprocessAdapter):
 
 
 def model_args(model):
+    """CLI argv for one billed model; the effort is the entry's, omitted when empty (CLI default)."""
+    effort = model.get("reasoning_effort") or ""
     if model["provider"] == "codex":
         args = ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
-                "--model", model["cli_model_id"], "-c", 'model_reasoning_effort="low"',
+                "--model", model["cli_model_id"],
+                *(["-c", f'model_reasoning_effort="{effort}"'] if effort else []),
                 "-c", 'approval_policy="never"', "-c", 'web_search="disabled"']
         for feature in ("multi_agent", "shell_tool", "apps", "plugins", "hooks", "memories", "browser_use", "image_generation"):
             args += ["--disable", feature]
         return "codex", args
     if model["provider"] == "antigravity":
-        return "agy", ["--model", model["cli_model_id"], "--effort", model["reasoning_effort"],
+        return "agy", ["--model", model["cli_model_id"], *(["--effort", effort] if effort else []),
                        "--disable-slash-commands", "--output-format", "stream-json", "--dangerously-skip-permissions", "-p"]
+    if model["provider"] == "claude":
+        # --tools "" drops every built-in tool (files, shell, web, subagents) and the adapter adds
+        # --mcp-config/--strict-mcp-config, so the hub tools are the whole surface and the only ones
+        # pre-approved. Partial messages name each tool call in the stream; without them a tool
+        # result reaches the native-tool check nameless. Variadic flags end at the next flag; -p is last.
+        return "claude", ["--model", model["cli_model_id"], *(["--effort", effort] if effort else []),
+                          "--tools", "", "--allowedTools", ",".join(CLAUDE_HUB_TOOLS),
+                          "--setting-sources", "", "--no-session-persistence",
+                          "--output-format", "stream-json", "--include-partial-messages", "--verbose", "-p"]
     raise ValueError("Unexpected provider; no fallback permitted")
 
 
@@ -84,7 +104,16 @@ class Ledger:
         for key in ("input_tokens", "output_tokens"):
             if type(usage.get(key)) is not int or usage[key] < 0:
                 raise ValueError("missing or invalid " + key)
-        return (Decimal(usage["input_tokens"]) * Decimal(str(model["input_usd_per_million"]))
+        input_tokens = usage["input_tokens"]
+        if model["provider"] == "claude":
+            # Claude counts cache reads and writes outside input_tokens (codex and agy count
+            # them inside); with no cache discount every one of them is billed as input.
+            for key in ("cached_input_tokens", "cache_creation_input_tokens"):
+                extra = usage.get(key, 0)
+                if type(extra) is not int or extra < 0:
+                    raise ValueError("missing or invalid " + key)
+                input_tokens += extra
+        return (Decimal(input_tokens) * Decimal(str(model["input_usd_per_million"]))
                 + Decimal(usage["output_tokens"]) * Decimal(str(model["output_usd_per_million"]))) / 1_000_000
 
     def before(self, model_key):
@@ -120,13 +149,15 @@ class Ledger:
 def audit_transport_reads(diagnostics_dir, turn_id, native):
     """agy discovers MCP tools by reading its own generated schema files.
 
-    Permit only exact transport schema paths, never arbitrary view_file calls.
+    Permit only exact transport schema paths, never arbitrary file reads.
+    agy 1.5.x reports them as read_file/Path under the workspace plugin's
+    server (unity_hub since #118); older builds used view_file/AbsolutePath.
     Missing/truncated trace is insufficient evidence to waive a file read.
     """
     if not native:
         return [], 0
-    allowed_parent = Path.home() / ".gemini/antigravity-cli/mcp/yiren_hub"
-    schema_names = {name + ".json" for name in ("publish_message", "read_context", "log_thought", "invoke_agent")}
+    allowed_parent = Path.home() / ".gemini/antigravity-cli/mcp" / AGY_SERVER_NAME
+    schema_names = {name + ".json" for name in HUB_TOOL_NAMES}
     safe_reads = 0
     for path in Path(diagnostics_dir).glob("*.json"):
         diagnostic = json.loads(path.read_text())
@@ -137,23 +168,104 @@ def audit_transport_reads(diagnostics_dir, turn_id, native):
                 step = json.loads(line).get("step_update", {})
             except (ValueError, AttributeError):
                 continue
-            if step.get("tool_name") != "view_file" or step.get("state") not in ("ACTIVE", "DONE"):
+            if step.get("tool_name") not in AGY_FILE_READ_TOOLS or step.get("state") not in ("ACTIVE", "DONE"):
                 continue
-            target = step.get("tool_info", {}).get("parameters", {}).get("AbsolutePath")
+            parameters = step.get("tool_info", {}).get("parameters", {})
+            target = parameters.get("AbsolutePath", parameters.get("Path"))
             if isinstance(target, str):
                 target = Path(target)
                 if target.parent == allowed_parent and target.name in schema_names:
                     safe_reads += 1
-    prohibited = [name for name in native if name != "view_file"]
-    if native.count("view_file") != safe_reads:
-        prohibited.append("view_file outside audited MCP schemas")
+    prohibited = [name for name in native if name not in AGY_FILE_READ_TOOLS]
+    if sum(native.count(name) for name in AGY_FILE_READ_TOOLS) != safe_reads:
+        prohibited.append("file read outside audited MCP schemas")
     return prohibited, safe_reads
+
+
+def _content_blocks(event):
+    """The content blocks a claude stream event shows: a whole assistant message's,
+    or one a partial message opens (content_block_start, message_start)."""
+    if event.get("type") == "stream_event":
+        event = event.get("event")
+        if not isinstance(event, dict):
+            return []
+        if event.get("type") == "content_block_start":
+            return [event.get("content_block")]
+        if event.get("type") != "message_start":
+            return []
+    elif event.get("type") != "assistant":
+        return []
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, list) else []
+
+
+def audit_claude_stream(database_path, mission_id, turn_id):
+    """A closed-book claude turn, from its own recorded stream; its distinct problems, [] when clean.
+
+    The init event must offer the hub tools and nothing else from yiren_hub alone,
+    and every content block, whole or partial, must be text, thinking or a hub
+    tool call: a block that only ever streamed as a partial still ran (#162).
+    Each record (one per CLI process) must show it whole, so a turn with no
+    record, a file of the turn that does not read back whole as its record, a
+    record whose init never reached it, and a record that never finished,
+    dropped lines at its size cap or was cut at the reader's entry limit (#161)
+    are not clean.
+    """
+    records = read_records(database_path, mission_id, turn_id, strict=True)
+    problems = [] if records else ["claude init event not recorded"]
+    for record in records:
+        if record.get("error"):
+            problems.append("claude turn record unreadable: " + record["error"])
+            continue
+        entries, inits = record["entries"], 0
+        exit_entry = next((e for e in entries if e.get("kind") == "exit"), None)
+        if any(e.get("kind") == "omitted" for e in entries):
+            problems.append("claude turn record cut at the read limit")
+        elif exit_entry is None:
+            problems.append("claude turn record unfinished")
+        elif exit_entry.get("truncated") or exit_entry.get("dropped_lines"):
+            problems.append("claude turn record truncated")
+        for entry in entries:
+            if entry.get("kind") != "stdout":
+                continue
+            try:
+                event = json.loads(entry.get("line") or "")
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                inits += 1
+                extra = sorted(set(event.get("tools") or []) - set(CLAUDE_HUB_TOOLS))
+                servers = sorted(str(s.get("name")) for s in event.get("mcp_servers") or [] if isinstance(s, dict))
+                if extra:
+                    problems.append("claude tools beyond the hub: " + ", ".join(extra))
+                if servers != ["yiren_hub"]:
+                    problems.append("claude MCP servers: " + (", ".join(servers) or "<none>"))
+                continue
+            for block in _content_blocks(event):
+                kind = block.get("type") if isinstance(block, dict) else None
+                if kind in ("text", "thinking", "redacted_thinking"):
+                    continue
+                if kind == "tool_use" and block.get("name") in CLAUDE_HUB_TOOLS:
+                    continue
+                name = block.get("name") if isinstance(block, dict) else None
+                problems.append(f"claude content block {kind}" + (f" {name}" if name else ""))
+        if not inits:
+            problems.append("claude init event not recorded")
+    # A block streams as a partial and then comes whole: one finding, not two.
+    return list(dict.fromkeys(problems))
 
 
 class BudgetedAdapter(CLIAdapter):
     def __init__(self, runner, ledger, condition, factory=None):
         self.runner, self.ledger, self.condition = runner, ledger, condition
         self.factory = factory or IsolatedCLI
+
+    def idle_timeout(self, tools):
+        """The cost-aware pilot's flat idle cut; 0 would leave only the hard timeout."""
+        return 45
 
     def run_turn(self, mission_id, agent_id, turn_id, provider_id, prompt, tools):
         key = self.condition["mapping"][agent_id]
@@ -166,7 +278,7 @@ class BudgetedAdapter(CLIAdapter):
         adapter = self.factory(command, args, db_path=self.runner.settings.database_path,
                                artifact_root=self.runner.settings.artifact_root,
                                mcp_module="backend.app.evaluation.pilot_mcp_server",
-                               timeout=self.runner.settings.cli_timeout, idle_timeout=45)
+                               timeout=self.runner.settings.cli_timeout, idle_timeout=self.idle_timeout(tools))
         common = "\n【闭卷评测约束】仅使用给定题目和共享对话。除读取本次 yiren_hub MCP 工具的参数 schema 外，禁止读取本机文件、执行命令、联网、调用原生子 Agent 或 skills。只允许本次 MCP 的上下文读取、简短判断摘要、发言和已开放的 A2A。最终交付格式以 Goal 为准；检查回合只给具体检查意见。"
         try:
             outcome = adapter.run_turn(mission_id, agent_id, turn_id, provider_id, prompt + common, tools)
@@ -180,6 +292,8 @@ class BudgetedAdapter(CLIAdapter):
         native = [event.payload.get("tool_name") for event in events if event.event_type == "provider.activity" and event.payload.get("turn_id") == turn_id
                   and not str(event.payload.get("tool_name", "")).startswith(("mcp__yiren_hub__", "yiren_hub."))]
         prohibited, schema_reads = audit_transport_reads(self.runner.settings.database_path.parent / "cli-diagnostics", turn_id, native)
+        if model["provider"] == "claude":
+            prohibited += audit_claude_stream(self.runner.settings.database_path, mission_id, turn_id)
         record = {"condition": self.condition["id"], "mission_id": mission_id, "turn_id": turn_id,
                   "agent_id": agent_id, "model_key": key, "model_id": model["model_id"],
                   "cli_model_id": model["cli_model_id"], "status": str(outcome.status), "native_tools": native,

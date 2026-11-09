@@ -1,0 +1,30 @@
+{
+ "version": 1,
+ "note": "编排模式的补充价目：日常路由里 cost-aware-v1 冻结表没有的模型。与那张表合并使用，不覆盖其中任何条目。API 等价标准价，不是 CLI 账单；账本不打缓存折扣。",
+ "models": {
+  "claude-opus": {
+   "model_id": "claude-opus-5-5",
+   "provider": "claude",
+   "cli_model_id": "opus",
+   "input_usd_per_million": 4,
+   "cached_input_usd_per_million": 0.2,
+   "output_usd_per_million": 20,
+   "pricing_source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+   "pricing_checked_on": "2026-11-09",
+   "pricing_note": "价目取自 claude-api 技能内置模型表（该表缓存于 2026-10-06），未在线复核。CLI 别名 opus 实际解析到哪个模型，以调用时 init 事件的 model 字段为准。",
+   "price_type": "standard_api_equivalent_not_cli_invoice"
+  },
+  "gemini-flash-high": {
+   "model_id": "gemini-3.8-flash",
+   "provider": "antigravity",
+   "cli_model_id": "gemini-3.8-flash-high",
+   "input_usd_per_million": 0.75,
+   "cached_input_usd_per_million": null,
+   "output_usd_per_million": 3.75,
+   "pricing_source": "https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.8",
+   "pricing_checked_on": "2026-10-18",
+   "pricing_note": "沿用 cost-aware-v1 economy 条目（gemini-3.8-flash-low）的同一底模和价目：那张表把 -low 记为 gemini-3.8-flash 的思考档位，-high 同理，思考 token 按输出计。本条没有单独复核网页。",
+   "price_type": "standard_api_equivalent_not_cli_invoice"
+  }
+ }
+}

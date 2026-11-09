@@ -30,6 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from backend.app.evaluation import clueeval as C  # noqa: E402
+from backend.app.evaluation import clueeval_hub as H  # noqa: E402
 
 DATA = ROOT / "eval/clueeval"
 
@@ -56,14 +57,16 @@ def run(args) -> int:
     if problems:
         print("nothing run:\n  " + "\n  ".join(problems), file=sys.stderr)
         return 2
-    out = args.output
+    # Absolute: the orchestrated seats run their MCP server from a closed-book temp
+    # cwd; a relative db path would resolve against that temp dir and fail to open.
+    out = args.output.resolve()
     if (out / "calls.jsonl").exists():
         print(f"{out} already has calls.jsonl; pick a new --output", file=sys.stderr)
         return 2
     out.mkdir(parents=True, exist_ok=True)
     routing = json.loads(args.routing.read_text()) if args.routing else None
-    if args.mode == "real" and routing is None:
-        print("--mode real needs --routing", file=sys.stderr)
+    if args.mode in ("real", "orchestrated") and routing is None:
+        print(f"--mode {args.mode} needs --routing", file=sys.stderr)
         return 2
     manifest = {
         "started_at": datetime.now(timezone.utc).isoformat(), "mode": args.mode, "rounds": args.rounds,
@@ -74,23 +77,51 @@ def run(args) -> int:
         "routing_sha256": C.sha256_bytes(args.routing.read_bytes()) if args.routing else None,
         # What this script did, not an audit of the CLI subprocesses; those are checked per call (valid/invalid_reasons).
         "answer_key_opened_by_harness": False,
-        # Which layer the numbers speak for: these CLIs on their daily routes in a fixed round-robin discussion.
-        # Unity's own orchestration (personas, publish_message, invoke_agent, memory) is not on this path.
-        "harness_layer": "direct-cli-round-robin",
+        # Which layer the numbers speak for: fixture replay, these CLIs on their daily routes in a fixed
+        # round-robin discussion, or the same games with each seat turn executed inside Unity orchestration.
+        "harness_layer": {"fixture": "fixture-replay", "real": "direct-cli-round-robin",
+                          "orchestrated": H.HARNESS_LAYER}[args.mode],
         "seats": {},
     }
-    if args.mode == "real":
+    if args.mode == "orchestrated":
+        manifest["hub_note"] = H.LAYER_NOTE
+        manifest["harness_hub_sha256"] = C.sha256_bytes(Path(H.__file__).read_bytes())
+        manifest["a2a_budget"] = args.a2a_budget
+        manifest["limit_usd"] = args.limit_usd
+        manifest["hard_spend_limit"] = False
+        manifest["serialized_phases"] = H.SERIALIZED_NOTE
+    if args.mode in ("real", "orchestrated"):
         manifest["cli_versions"] = {c: _cli_version(c) for c in ("claude", "codex", "agy")}
         # These files reach the model besides our prompt; recorded so runs stay comparable.
         manifest["cli_global_instructions_sha256"] = C.global_instructions()
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     writer = C.GameWriter(out)
     invalid = 0
+    hub = None
+    if args.mode == "orchestrated":
+        from backend.app.evaluation.real_pilot import PACK
+        from backend.app.settings import Settings
+        from backend.app.storage.repository import Repository
+
+        hub_dir = out / "hub"
+        hub_dir.mkdir(exist_ok=True)
+        settings = Settings(database_path=hub_dir / "eval.sqlite3", artifact_root=hub_dir / "artifacts",
+                            config_dir=ROOT / "config", use_fake_cli=False, max_turns=1,
+                            max_a2a_invocations=args.a2a_budget, cli_timeout=args.cli_timeout)
+        settings.artifact_root.mkdir(exist_ok=True)
+        repository = Repository(settings.database_path)
+        repository.initialize()
+        protocol_models = H.priced_models(json.loads((PACK / "protocol.json").read_text())["models"])
+        hub = {"settings": settings, "repository": repository, "protocol_models": protocol_models,
+               "ledger": H.HubLedger(out, {}, args.limit_usd)}
+        manifest["hub_models_pricing"] = ("cost-aware-v1 frozen API-equivalent rates plus eval/clueeval/pricing.json; "
+                                          "no cache discount; not a CLI invoice")
+        manifest["hub_pricing_sha256"] = C.sha256_bytes(H.PRICING_PATH.read_bytes())
     # A rerun of a voided game keeps its game number, so its card rotation and speaking order stay the same.
     game_indices = args.game_index or list(range(args.games))
     for qid in selected:
         q = questions[qid]
-        respond = C.cli_responder(args.cli_timeout) if args.mode == "real" else C.fixture_responder(q)
+        respond = C.fixture_responder(q) if args.mode == "fixture" else None
         for condition in args.condition:
             # The table seats one role per card; the solo baseline seats every routed role, one at a time.
             n = len(C.DEFAULT_ROSTER) if condition == "solo_full" else len(q["cards"])
@@ -104,12 +135,28 @@ def run(args) -> int:
             tables = [[C.Seat(0, s.role, s.provider, s.model, s.effort)] for s in seats] \
                 if condition == "solo_full" else [seats]
             for game, table in ((g, t) for g in game_indices for t in tables):
+                if args.mode == "real":
+                    respond = C.cli_responder(args.cli_timeout)
+                elif args.mode == "orchestrated":
+                    if any(s.provider not in H.SEAT_PROVIDERS for s in table):
+                        print(f"{qid}/{condition}: orchestrated mode drives {'/'.join(H.SEAT_PROVIDERS)} seats only; "
+                              f" routed {[s.role + '=' + s.provider for s in table]}", file=sys.stderr)
+                        return 2
+                    hub["ledger"].models.update(H.seat_models(table, hub["protocol_models"]))
+                    game_hub = H.OrchestratedGame(
+                        q, f"{qid}-{condition}-g{game}", table, settings=hub["settings"],
+                        repository=hub["repository"], ledger=hub["ledger"], a2a_budget=args.a2a_budget)
+                    respond = game_hub.respond
                 record = C.run_game(q, game, condition, args.rounds, table, respond, writer)
                 print(record["game"], [(s["card"], s["pre_pick"], s["final_pick"]) for s in record["seats"]],
                       "" if record["valid"] else f"INVALID: {record['invalid_reason']}", flush=True)
                 invalid += not record["valid"]
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
     manifest["invalid_games"] = invalid
+    if hub is not None:
+        manifest["hub_observed_host_calls"] = len(hub["ledger"].calls)
+        manifest["hub_observed_api_equivalent_usd"] = float(hub["ledger"].spent)
+        manifest["hub_stop_reason"] = hub["ledger"].stop_reason or None
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     if invalid:
         print(f"{invalid} invalid game(s); score leaves them out", file=sys.stderr)
@@ -120,7 +167,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--mode", choices=["fixture", "real"], default="fixture")
+    r.add_argument("--mode", choices=["fixture", "real", "orchestrated"], default="fixture")
     r.add_argument("--questions", type=Path, default=DATA / "questions.json")
     r.add_argument("--question", action="append", help="Question id; repeatable; default all")
     r.add_argument("--condition", action="append", choices=C.CONDITIONS, help="Repeatable; default private")
@@ -130,6 +177,10 @@ def main() -> int:
     r.add_argument("--rounds", type=int, default=3)
     r.add_argument("--routing", type=Path, help="hub_settings.json whose role routes and models seat the table")
     r.add_argument("--cli-timeout", type=int, default=600)
+    r.add_argument("--limit-usd", type=float, default=1.5,
+                   help="orchestrated only: soft pre-call spend gate on API-equivalent estimates")
+    r.add_argument("--a2a-budget", type=int, default=0,
+                   help="orchestrated only: accepted invoke_agent relays per game; 0 disables A2A")
     r.add_argument("--output", type=Path, required=True)
     s = sub.add_parser("score")
     s.add_argument("--output", type=Path, required=True)
