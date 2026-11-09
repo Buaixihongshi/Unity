@@ -7,6 +7,7 @@
 | `q1-storage` | 3 | Unity 自制，solo-v4 第二轮单人筛选通过版，题面一字未改 |
 | `q2-rootcause` | 3 | 同上 |
 | `hb-009-critical_hospital_transfer` | 4 | HiddenBench 原题（见下文），保留原有人数和分卡 |
+| `hb-009-critical_hospital_transfer-zh` | 4 | 上一题的中文译版 `zh-1`（作者自译，未经独立校对）；只换语言，事实、分卡、人数不变。成绩不能当英文原题成绩比较 |
 
 ## 文件与隔离边界
 
@@ -16,6 +17,11 @@
 - 每次调用都会记录初始上下文里实际找到了哪几张卡（`cards_in_initial_context`）。找到的卡和本席位分到的卡不一致时，CLI 启动前就会报错停下。别人的私卡只能经由讨论记录、在持卡人发过言之后才出现（`cards_in_transcript`）。
 
 ## 协议
+
+- 条件：`private`（每席一张私卡讨论）、`shared_only`（只给共享材料）、`solo_full`（单人基线：一个席位拿共享材料加全部私卡，只答一次，不讨论）。`solo_full` 会让路由里的每个角色各自单独作答，自制题用 solo-v4 全材料条件的【补充材料】写法，HiddenBench 题把全部条目接在共享列表后面。
+- 席位的推理强度取路由里该角色当前 provider 的 `provider_efforts`：Claude 传 `--effort`，Codex 传 `-c model_reasoning_effort=…`；Antigravity 模型名自带强度，不另外传参。
+- 每次调用记录 CLI 自报的 token 计数（`meta.usage`）；只有 Claude 会报费用（`meta.cost_usd`），其余记为缺失。`score` 的 `calls` 按局、按 provider 汇总调用数、无效调用数、调用耗时、token 和费用。
+- **结论层级**：这是直接调用各 CLI 的固定轮流讨论，不经过 Unity 的编排（角色人设、publish_message、invoke_agent、记忆）。它能回答“这几个 CLI 按日常路由和参数、在结构化讨论里拼私卡有没有收益”，不能直接代表 Unity 聊天室里的协作表现。manifest 记为 `harness_layer=direct-cli-round-robin`。
 
 - 讨论前，每人先独立作答；然后按轮次轮流发言，默认 3 轮；最后每人独立作答。每次调用都是无状态的：拼上完整的讨论记录，在临时空目录里运行，不开工具，也不续接 CLI 会话。
 - 私卡分配和起始发言人都随局号轮换。

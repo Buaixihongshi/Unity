@@ -23,8 +23,9 @@ def _run(tmp_path, qid, condition="private", game=0, rounds=2):
 
 
 def test_three_questions_with_original_seat_counts():
-    assert list(QUESTIONS) == ["q1-storage", "q2-rootcause", "hb-009-critical_hospital_transfer"]
-    assert [len(q["cards"]) for q in QUESTIONS.values()] == [3, 3, 4]
+    assert list(QUESTIONS) == ["q1-storage", "q2-rootcause", "hb-009-critical_hospital_transfer",
+                               "hb-009-critical_hospital_transfer-zh"]
+    assert [len(q["cards"]) for q in QUESTIONS.values()] == [3, 3, 4, 4]
 
 
 def test_hiddenbench_item_is_pinned_and_reassembles_to_recorded_hash():
@@ -61,19 +62,19 @@ def test_each_seat_starts_with_shared_plus_only_its_own_card(tmp_path, qid, game
     for call in calls:
         own = assigned[call["seat"] - 1]
         assert call["cards_in_initial_context"] == [own]
-        context = call["prompt"][: len(C.initial_context(q, next(c for c in q["cards"] if c["id"] == own)))]
+        context = call["prompt"][: len(C.initial_context(q, [c for c in q["cards"] if c["id"] == own]))]
         assert C.cards_in(q, context) == [own]
         assert KEY["canary"] not in call["prompt"]
         rationale = KEY["answers"][qid].get("rationale")
         if rationale:
             assert rationale[:80] not in call["prompt"]
-    shared = q["shared"] if q["lang"] == "zh" else q["original"]["shared_information"][0]
+    shared = C._hb_text(q)[1][0] if C.is_hiddenbench(q) else q["shared"]
     assert all(shared in call["prompt"] for call in calls)
 
 
 def test_cards_rotate_between_games(tmp_path):
     q = QUESTIONS["q2-rootcause"]
-    assert [c["id"] for c in C.seat_cards(q, 0, "private")] != [c["id"] for c in C.seat_cards(q, 1, "private")]
+    assert [c[0]["id"] for c in C.seat_cards(q, 0, "private")] != [c[0]["id"] for c in C.seat_cards(q, 1, "private")]
 
 
 def test_other_cards_reach_a_seat_only_after_their_holder_speaks(tmp_path):
@@ -101,7 +102,7 @@ def test_audit_refuses_a_context_that_carries_someone_elses_card():
     q = QUESTIONS["q1-storage"]
     own, other = q["cards"][0], q["cards"][1]
     with pytest.raises(C.IsolationError):
-        C.audit_context(q, C.initial_context(q, own) + "\n" + other["text"], own)
+        C.audit_context(q, C.initial_context(q, [own]) + "\n" + other["text"], [own])
 
 
 def test_run_does_not_need_the_answer_key(tmp_path, monkeypatch):
@@ -115,8 +116,9 @@ def test_run_does_not_need_the_answer_key(tmp_path, monkeypatch):
     _run(tmp_path, "hb-009-critical_hospital_transfer")
 
 
-def test_hiddenbench_seats_are_not_told_others_differ(tmp_path):
-    _, _, calls = _run(tmp_path, "hb-009-critical_hospital_transfer")
+@pytest.mark.parametrize("qid", ["hb-009-critical_hospital_transfer", "hb-009-critical_hospital_transfer-zh"])
+def test_hiddenbench_seats_are_not_told_others_differ(tmp_path, qid):
+    _, _, calls = _run(tmp_path, qid)
     assert all("different" not in c["prompt"] and "你看不到" not in c["prompt"] for c in calls)
 
 
@@ -133,6 +135,8 @@ def test_score_reads_key_after_run(tmp_path):
     ("q1-storage", "我觉得\n结论：石塔", None),
     ("hb-009-critical_hospital_transfer", '```json\n{"vote": "hospital a", "rationale": "x"}\n```', "Hospital A"),
     ("hb-009-critical_hospital_transfer", '{"vote": "Hospital D"}', None),
+    ("hb-009-critical_hospital_transfer-zh", '```json\n{"vote": "医院A", "rationale": "山口已通"}\n```', "医院A"),
+    ("hb-009-critical_hospital_transfer-zh", '{"vote": "Hospital A"}', None),
 ])
 def test_parse_pick(qid, text, pick):
     assert C.parse_pick(QUESTIONS[qid], text) == pick
@@ -152,8 +156,10 @@ def test_roster_follows_routing_and_seats_four_roles():
                           "wangye": {"default_provider_id": "antigravity", "provider_models": {"antigravity": "g"}}},
                "custom_agents": [{"id": "role-694a37", "default_provider_id": "antigravity",
                                   "provider_models": {"antigravity": "g-low"}}]}
+    routing["agents"]["baobao"]["provider_efforts"] = {"codex": "high", "claude": "low"}
     seats = C.resolve_roster(routing, 4)
     assert [(s.role, s.provider, s.model) for s in seats][-1] == ("role-694a37", "antigravity", "g-low")
+    assert [s.effort for s in seats] == ["", "high", "", ""]  # only the routed provider's effort applies
     with pytest.raises(ValueError):
         C.resolve_roster({"agents": {"chulan": {"default_provider_id": "claude"}}}, 1)
 
@@ -383,3 +389,75 @@ def test_a_responder_that_raises_still_leaves_an_invalid_record(tmp_path):
     assert all(s["pre_pick"] for s in record["seats"])  # what finished before the failure is kept
     logged = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
     assert logged[-1]["phase"] == "discuss" and logged[-1]["valid"] is False
+
+
+# ---------------------------------------------------------------- formal batch: Chinese HiddenBench, efforts, solo baseline
+
+def test_chinese_hiddenbench_is_a_pinned_translation_of_the_same_item():
+    zh, en = QUESTIONS["hb-009-critical_hospital_transfer-zh"], QUESTIONS["hb-009-critical_hospital_transfer"]
+    assert zh["original"] == en["original"] and zh["origin"]["item_sha256"] == en["origin"]["item_sha256"]
+    assert zh["origin"]["translation"]["version"] == "zh-1"
+    assert [c["id"] for c in zh["cards"]] == [c["id"] for c in en["cards"]]
+    assert KEY["answers"][zh["id"]]["correct"] == "医院A" and KEY["answers"][zh["id"]]["correct"] in zh["options"]
+    context = C.initial_context(zh, [zh["cards"][0]])
+    assert "Hospital" not in context and context.rstrip().endswith(zh["cards"][0]["text"])
+    prompt = C.phase_prompt(zh, context, "final", 0, 4, [])
+    assert '"vote"' in prompt and "医院A、医院B、医院C" in prompt
+
+
+def test_route_effort_reaches_each_cli_command():
+    workdir = Path("/tmp/x")
+    claude = C.cli_command(C.Seat(0, "r", "claude", "opus", "high"), "p", workdir)
+    assert claude[claude.index("--effort") + 1] == "high" and claude[-1] == "p"
+    codex = C.cli_command(C.Seat(0, "r", "codex", "m", "high"), "p", workdir)
+    assert 'model_reasoning_effort="high"' in codex and codex[-1] == "p"
+    assert "--effort" not in C.cli_command(C.Seat(0, "r", "antigravity", "g-high"), "p", workdir)
+    assert not any("model_reasoning_effort" in a for a in C.cli_command(C.Seat(0, "r", "codex", "m"), "p", workdir))
+
+
+@pytest.mark.parametrize("qid", ["q1-storage", "q2-rootcause", "hb-009-critical_hospital_transfer-zh"])
+def test_solo_full_seat_gets_every_card_and_answers_once(tmp_path, qid):
+    q = QUESTIONS[qid]
+    writer = C.GameWriter(tmp_path)
+    record = C.run_game(q, 2, "solo_full", 3, [C.Seat(0, "chulan", "fixture", "fixture")], C.fixture_responder(q), writer)
+    calls = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    ids = [c["id"] for c in q["cards"]]
+    assert len(calls) == 1 and calls[0]["phase"] == "solo" and calls[0]["cards_in_initial_context"] == ids
+    assert record["valid"] and record["game"] == f"{qid}__solo_full__chulan__r2"
+    assert record["seats"][0]["final_pick"] == q["options"][0]
+    assert "参与者" not in calls[0]["prompt"] and "你看不到" not in calls[0]["prompt"]
+    assert KEY["canary"] not in calls[0]["prompt"]
+    row = C.score(tmp_path, DATA / "answer_key.json")["games"][0]
+    assert row["condition"] == "solo_full" and row["role"] == "chulan" and row["seats"] == 1
+
+
+def test_solo_full_refuses_a_table_and_records_a_failed_call(tmp_path):
+    q = QUESTIONS["q1-storage"]
+    with pytest.raises(ValueError):
+        C.run_game(q, 0, "solo_full", 3, _fixture_seats(3), C.fixture_responder(q), C.GameWriter(tmp_path))
+
+    def boom(seat, phase, prompt):
+        raise RuntimeError("x")
+
+    record = C.run_game(q, 0, "solo_full", 3, _fixture_seats(1), boom, C.GameWriter(tmp_path))
+    assert not record["valid"] and "responder raised RuntimeError" in record["invalid_reason"]
+    assert C.score(tmp_path, DATA / "answer_key.json")["invalid_games"][0]["game"] == record["game"]
+
+
+def test_call_stats_sum_tokens_and_keep_cost_missing_when_a_cli_gives_none(tmp_path):
+    rows = [{"game": "g", "provider": "claude", "valid": True, "seconds": 2.0,
+             "meta": {"usage": {"input_tokens": 10, "output_tokens": 5}, "cost_usd": 0.01}},
+            {"game": "g", "provider": "claude", "valid": True, "seconds": 1.5,
+             "meta": {"usage": {"input_tokens": 1}, "cost_usd": 0.02}},
+            {"game": "g", "provider": "codex", "valid": False, "seconds": 3.0,
+             "meta": {"usage": {"input_tokens": 7}, "cost_usd": None}}]
+    (tmp_path / "calls.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    stats = C.call_stats(tmp_path)["g"]
+    assert stats["claude"] == {"calls": 2, "invalid_calls": 0, "call_seconds": 3.5,
+                               "tokens": {"input_tokens": 11, "output_tokens": 5}, "cost_usd": 0.03}
+    assert stats["codex"]["cost_usd"] is None and stats["codex"]["invalid_calls"] == 1
+
+
+def test_usage_extraction_keeps_numbers_only():
+    assert C._usage({"input_tokens": 3, "cached": True, "server_tool_use": {"x": 1}}) == {"input_tokens": 3}
+    assert C._usage(None) is None and C._usage({}) is None

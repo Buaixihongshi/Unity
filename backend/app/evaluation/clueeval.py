@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-CONDITIONS = ("private", "shared_only")
+# solo_full: one seat alone with the shared materials plus every card, answering once (the single-agent baseline).
+CONDITIONS = ("private", "shared_only", "solo_full")
 FORBIDDEN_QUESTION_KEYS = {"correct_answer", "rationale", "correct", "decoy", "answer"}
 # Daily roles that sit at the table, in seat order; four-seat questions add the custom role.
 DEFAULT_ROSTER = ("chulan", "baobao", "wangye", "role-694a37")
@@ -55,14 +56,32 @@ def load_questions(path: Path) -> Dict[str, dict]:
         ids = [c["id"] for c in q["cards"]]
         if len(set(ids)) != len(ids) or not ids:
             raise ValueError(f"{q['id']}: card ids must be unique and non-empty")
-        if q["lang"] == "en":
+        if is_hiddenbench(q) and q["lang"] == "en":
             original = q["original"]
             if [c["text"] for c in q["cards"]] != list(original["hidden_information"]):
                 raise ValueError(f"{q['id']}: cards differ from the pinned hidden_information")
             if q["options"] != original["possible_answers"]:
                 raise ValueError(f"{q['id']}: options differ from the pinned possible_answers")
+        elif is_hiddenbench(q):
+            original = q["original"]
+            if len(q["cards"]) != len(original["hidden_information"]) \
+                    or len(q["options"]) != len(original["possible_answers"]) \
+                    or len(q["shared_information"]) != len(original["shared_information"]):
+                raise ValueError(f"{q['id']}: translation does not line up with the pinned item")
         questions[q["id"]] = q
     return questions
+
+
+def is_hiddenbench(q: dict) -> bool:
+    """HiddenBench layout: private items join the shared list unlabelled and the answer is a JSON vote."""
+    return "original" in q
+
+
+def _hb_text(q: dict):
+    """(description, shared items) shown to the model: the pinned English item, or its pinned translation."""
+    if q["lang"] == "en":
+        return q["original"]["description"], list(q["original"]["shared_information"])
+    return q["description"], list(q["shared_information"])
 
 
 def _find_keys(obj, keys) -> set:
@@ -79,22 +98,31 @@ def _find_keys(obj, keys) -> set:
 
 # ---------------------------------------------------------------- prompts
 
-def seat_cards(q: dict, game: int, condition: str) -> List[Optional[dict]]:
-    """One distinct card per seat, rotated by game so a card does not stay with one provider."""
+def seat_cards(q: dict, game: int, condition: str) -> List[List[dict]]:
+    """Cards per seat: one distinct card rotated by game so a card does not stay with one provider;
+    none for shared_only; every card for the solo_full seat."""
     n = len(q["cards"])
     if condition == "shared_only":
-        return [None] * n
-    return [q["cards"][(i + game) % n] for i in range(n)]
+        return [[] for _ in range(n)]
+    if condition == "solo_full":
+        return [list(q["cards"])]
+    return [[q["cards"][(i + game) % n]] for i in range(n)]
 
 
-def initial_context(q: dict, card: Optional[dict]) -> str:
-    if q["lang"] == "en":
-        items = list(q["original"]["shared_information"]) + ([card["text"]] if card else [])
-        return q["original"]["description"] + "\n\nInformation you have:\n" + "\n".join("- " + i for i in items)
+def initial_context(q: dict, cards: List[dict]) -> str:
+    texts = [c["text"] for c in cards]
+    if is_hiddenbench(q):
+        description, items = _hb_text(q)
+        heading = "\n\nInformation you have:\n" if q["lang"] == "en" else "\n\n你掌握的信息：\n"
+        return description + heading + "\n".join("- " + i for i in items + texts)
     text = q["head"] + q["stem"] + "\n\n" + q["shared"]
-    if card:
-        text += "\n\n【你的私有材料】\n" + card["text"]
-    if q.get("tell_private_exists"):
+    if len(texts) > 1:  # solo_full: same wording as the solo-v4 full-material condition
+        text += "\n\n【补充材料】\n" + "\n".join(texts)
+    elif texts:
+        text += "\n\n【你的私有材料】\n" + texts[0]
+        if q.get("tell_private_exists"):
+            text += "\n\n队友手里的材料可能和你不同，你看不到。"
+    elif q.get("tell_private_exists"):
         text += "\n\n队友手里的材料可能和你不同，你看不到。"
     return text
 
@@ -103,16 +131,16 @@ def cards_in(q: dict, text: str) -> List[str]:
     return [c["id"] for c in q["cards"] if c["text"] in text]
 
 
-def audit_context(q: dict, context: str, card: Optional[dict]) -> List[str]:
+def audit_context(q: dict, context: str, cards: List[dict]) -> List[str]:
     found = cards_in(q, context)
-    expected = [card["id"]] if card else []
+    expected = [c["id"] for c in cards]
     if found != expected:
         raise IsolationError(f"{q['id']}: initial context holds {found}, expected {expected}")
     return found
 
 
 def render_transcript(q: dict, transcript: List[dict]) -> str:
-    label = "Participant" if q["lang"] == "en" else "参与者"
+    label = "Participant" if q["lang"] == "en" else ("参与者 " if is_hiddenbench(q) else "参与者")
     if not transcript:
         return "(no messages yet)" if q["lang"] == "en" else "（还没有人发言）"
     return "\n\n".join(f"{label} {m['seat'] + 1}: {m['text'].strip()}" for m in transcript)
@@ -123,6 +151,8 @@ def phase_prompt(q: dict, context: str, phase: str, seat: int, n: int, transcrip
     k = seat + 1
     log = render_transcript(q, transcript)
     if q["lang"] == "en":
+        if phase == "solo":
+            raise ValueError("solo_full runs only on the pinned Chinese versions")
         vote = ('Please decide and provide your rationale in the following JSON format: '
                 '{"vote": "<one of: ' + ", ".join(q["options"]) + '>", "rationale": "<your reasoning>"}')
         if phase == "pre":
@@ -133,6 +163,19 @@ def phase_prompt(q: dict, context: str, phase: str, seat: int, n: int, transcrip
                     "Write your next message to the group (at most 150 words). Output only the message.")
         return (f"{context}\n\nYou are Participant {k}. The discussion has ended. Full discussion:\n{log}\n\n"
                 f"Now decide on your own. {vote}")
+    if is_hiddenbench(q):
+        vote = ('请做出决定，并按以下 JSON 格式给出理由：'
+                '{"vote": "<从以下选项中选一个：' + "、".join(q["options"]) + '>", "rationale": "<你的理由>"}')
+        if phase == "solo":
+            return f"{context}\n\n请独立做出决定。{vote}"
+        if phase == "pre":
+            return f"{context}\n\n你是参与者 {k}。讨论开始前，请先独立做出决定。{vote}"
+        if phase == "discuss":
+            return (f"{context}\n\n你是参与者 {k}，正在和另外 {n - 1} 位参与者讨论。现在是第 {round_no}/{rounds} 轮。"
+                    f"\n\n目前的讨论：\n{log}\n\n写出你发给小组的下一条消息（不超过 300 字）。只输出消息内容。")
+        return (f"{context}\n\n你是参与者 {k}。讨论已经结束，完整讨论如下：\n{log}\n\n现在请独立做出决定。{vote}")
+    if phase == "solo":
+        return f"{context}\n\n请独立写出你的答案，格式按题目要求。"
     if phase == "pre":
         return f"{context}\n\n你是参与者{k}。讨论开始前，先独立写出你的初步答案，格式按题目要求。"
     if phase == "discuss":
@@ -146,7 +189,7 @@ def phase_prompt(q: dict, context: str, phase: str, seat: int, n: int, transcrip
 def parse_pick(q: dict, text: Optional[str]) -> Optional[str]:
     if not text:
         return None
-    if q["lang"] == "en":
+    if is_hiddenbench(q):
         for match in re.finditer(r"\{[^{}]*\}", text, re.S):
             try:
                 vote = str(json.loads(match.group(0)).get("vote", "")).strip()
@@ -171,6 +214,7 @@ class Seat:
     role: str
     provider: str
     model: str
+    effort: str = ""  # the route's reasoning effort; empty keeps the CLI default
 
 
 Responder = Callable[[Seat, str, str], dict]
@@ -180,9 +224,10 @@ def fixture_responder(q: dict) -> Responder:
     """Deterministic offline stand-in: answers the first option and repeats its own card when speaking."""
     def respond(seat: Seat, phase: str, prompt: str) -> dict:
         if phase == "discuss":
-            mine = [c for c in q["cards"] if c["text"] in prompt.split("【讨论记录】")[0].split("Discussion so far:")[0]]
+            head = prompt.split("【讨论记录】")[0].split("Discussion so far:")[0].split("目前的讨论：")[0]
+            mine = [c for c in q["cards"] if c["text"] in head]
             text = "我的材料：" + (mine[0]["text"] if mine else "只有共享材料")
-        elif q["lang"] == "en":
+        elif is_hiddenbench(q):
             text = json.dumps({"vote": q["options"][0], "rationale": "fixture"})
         else:
             text = q["answer_format"].format(option=q["options"][0]) + "\n- fixture"
@@ -213,18 +258,29 @@ def cli_command(seat: Seat, prompt: str, workdir: Path) -> List[str]:
     Each CLI streams its events so inspect_* can prove no tool ran; anything it cannot prove fails closed.
     """
     if seat.provider == "claude":
-        return ["claude", "-p", "--model", seat.model, "--output-format", "stream-json", "--verbose", "--tools", "",
+        effort = ["--effort", seat.effort] if seat.effort else []
+        return ["claude", "-p", "--model", seat.model, *effort, "--output-format", "stream-json", "--verbose", "--tools", "",
                 "--strict-mcp-config", "--no-session-persistence", "--setting-sources", "", prompt]
     if seat.provider == "codex":
         disabled = [arg for feature in CODEX_DISABLED_FEATURES for arg in ("--disable", feature)]
+        effort = ["-c", f'model_reasoning_effort="{seat.effort}"'] if seat.effort else []
         return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-m", seat.model,
-                *disabled, "-c", "web_search=disabled", "-c", "mcp_servers={}",
+                *effort, *disabled, "-c", "web_search=disabled", "-c", "mcp_servers={}",
                 "--json", "-o", str(workdir / "last.txt"), prompt]
     if seat.provider == "antigravity":
-        return ["agy", "--model", seat.model, "--new-project", "--disable-slash-commands",
+        effort = ["--effort", seat.effort] if seat.effort else []
+        return ["agy", "--model", seat.model, *effort, "--new-project", "--disable-slash-commands",
                 "--output-format", "stream-json", "--settings", AGY_SETTINGS,
                 "--log-file", str(workdir / "agy.log"), "-p=" + prompt]
     raise ValueError(f"unsupported provider {seat.provider}")
+
+
+def _usage(raw) -> Optional[dict]:
+    """Numeric token counters only, as the CLI reported them; None when it reported none."""
+    if not isinstance(raw, dict):
+        return None
+    flat = {k: v for k, v in raw.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    return flat or None
 
 
 def _events(stdout: str) -> List[dict]:
@@ -250,7 +306,8 @@ def inspect_claude(stdout: str):
         return None, {}, violations
     if result.get("is_error") or result.get("num_turns") != 1:
         violations.append(f"result is_error={result.get('is_error')} num_turns={result.get('num_turns')}")
-    meta = {"model_usage": list(result.get("modelUsage") or {}), "num_turns": result.get("num_turns")}
+    meta = {"model_usage": list(result.get("modelUsage") or {}), "num_turns": result.get("num_turns"),
+            "usage": _usage(result.get("usage")), "cost_usd": result.get("total_cost_usd")}
     return result.get("result"), meta, violations
 
 
@@ -274,7 +331,9 @@ def inspect_codex(stdout: str, last_text: Optional[str]):
         violations.append(f"{turns} completed turns")
     if last_text is None:
         violations.append("no last message file")
-    meta = {"tool_items": sorted({v[5:] for v in violations if v.startswith("item ")}), "tool_detail": detail}
+    usage = next((e.get("usage") for e in events if e.get("type") == "turn.completed"), None)
+    meta = {"tool_items": sorted({v[5:] for v in violations if v.startswith("item ")}), "tool_detail": detail,
+            "usage": _usage(usage), "cost_usd": None}
     return last_text, meta, violations
 
 
@@ -303,7 +362,8 @@ def inspect_antigravity(stdout: str, log_text: Optional[str]):
     if result.get("status") != "SUCCESS":
         violations.append(f"status {result.get('status')}")
     meta = {"tool_steps": sorted({v[5:] for v in violations if v.startswith("step ")}), "tool_detail": detail,
-            "num_turns": result.get("num_turns")}
+            "num_turns": result.get("num_turns"), "usage": _usage(result.get("usage") or result.get("stats")),
+            "cost_usd": None}
     return result.get("response"), meta, violations
 
 
@@ -379,7 +439,8 @@ def resolve_roster(hub_settings: dict, n: int, roles=DEFAULT_ROSTER) -> List[Sea
         model = (route.get("provider_models") or {}).get(provider)
         if provider not in _SEMAPHORES or not model:
             raise ValueError(f"role {role}: route {provider}/{model} is not a pinned CLI model")
-        seats.append(Seat(i, role, provider, model))
+        effort = (route.get("provider_efforts") or {}).get(provider) or ""
+        seats.append(Seat(i, role, provider, model, effort))
     return seats
 
 
@@ -397,6 +458,8 @@ class GameWriter:
 
 def run_game(q: dict, game: int, condition: str, rounds: int, seats: List[Seat], respond: Responder,
              writer: GameWriter) -> dict:
+    if condition == "solo_full":
+        return run_solo(q, game, seats, respond, writer)
     n = len(q["cards"])
     if len(seats) != n:
         raise ValueError(f"{q['id']} needs {n} seats, got {len(seats)}")
@@ -415,7 +478,7 @@ def run_game(q: dict, game: int, condition: str, rounds: int, seats: List[Seat],
         except Exception as exc:  # a crashing responder still leaves a logged, invalid call and a voided game
             result = failed_call(f"responder raised {type(exc).__name__}")
         writer.call({"game": gid, "seat": seat.index + 1, "role": seat.role, "provider": seat.provider,
-                     "model": seat.model, "phase": phase, "round": round_no,
+                     "model": seat.model, "effort": seat.effort, "phase": phase, "round": round_no,
                      "cards_in_initial_context": received[seat.index],
                      "cards_in_transcript": cards_in(q, prompt[len(contexts[seat.index]):]),
                      "context_sha256": sha256_bytes(contexts[seat.index].encode()),
@@ -451,17 +514,55 @@ def run_game(q: dict, game: int, condition: str, rounds: int, seats: List[Seat],
         "game": gid, "question": q["id"], "condition": condition, "game_index": game, "rounds": rounds,
         "valid": invalid is None, "invalid_reason": invalid,
         "speaking_order": [(start + o) % n + 1 for o in range(n)],
-        "seats": [{"seat": s.index + 1, "role": s.role, "provider": s.provider, "model": s.model,
-                   "card": cards[s.index]["id"] if cards[s.index] else None,
+        "seats": [{"seat": s.index + 1, "role": s.role, "provider": s.provider, "model": s.model, "effort": s.effort,
+                   "card": cards[s.index][0]["id"] if cards[s.index] else None,
                    "cards_in_initial_context": received[s.index],
                    "pre_pick": pick(pre, s.index), "final_pick": pick(final, s.index),
                    "rc": [r[s.index]["rc"] if r else None for r in (pre, final)]} for s in seats],
         "transcript": transcript,
     }
+    _write_game(writer, q, record)
+    return record
+
+
+def _write_game(writer: GameWriter, q: dict, record: dict) -> None:
     games = writer.out / "games"
     games.mkdir(exist_ok=True)
-    (games / f"{gid}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1))
-    (games / f"{gid}.md").write_text(_markdown(q, record))
+    (games / f"{record['game']}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1))
+    (games / f"{record['game']}.md").write_text(_markdown(q, record))
+
+
+def run_solo(q: dict, rep: int, seats: List[Seat], respond: Responder, writer: GameWriter) -> dict:
+    """Single-agent baseline: the one seat gets the shared materials plus every card and answers once."""
+    if len(seats) != 1:
+        raise ValueError(f"solo_full takes one seat, got {len(seats)}")
+    seat = seats[0]
+    cards = seat_cards(q, rep, "solo_full")[0]
+    context = initial_context(q, cards)
+    received = audit_context(q, context, cards)
+    gid = f"{q['id']}__solo_full__{seat.role}__r{rep}"
+    prompt = phase_prompt(q, context, "solo", 0, 1, [])
+    try:
+        result = respond(seat, "solo", prompt)
+    except Exception as exc:  # same contract as run_game: a crash is a logged, invalid call
+        result = failed_call(f"responder raised {type(exc).__name__}")
+    pick = parse_pick(q, result["text"])
+    writer.call({"game": gid, "seat": 1, "role": seat.role, "provider": seat.provider, "model": seat.model,
+                 "effort": seat.effort, "phase": "solo", "round": 0, "cards_in_initial_context": received,
+                 "cards_in_transcript": [], "context_sha256": sha256_bytes(context.encode()), "prompt": prompt,
+                 **result, "pick": pick})
+    valid = result.get("valid") is True
+    record = {
+        "game": gid, "question": q["id"], "condition": "solo_full", "game_index": rep, "rounds": 0, "valid": valid,
+        "invalid_reason": None if valid else "seat 1 solo r0: " + "; ".join(
+            result.get("invalid_reasons") or ["validity not reported"]),
+        "speaking_order": [],
+        "seats": [{"seat": 1, "role": seat.role, "provider": seat.provider, "model": seat.model, "effort": seat.effort,
+                   "card": "+".join(received), "cards_in_initial_context": received, "pre_pick": None,
+                   "final_pick": pick, "rc": [None, result.get("rc")]}],
+        "transcript": [],
+    }
+    _write_game(writer, q, record)
     return record
 
 
@@ -471,7 +572,8 @@ def _markdown(q: dict, record: dict) -> str:
         lines += [f"> **无效局，不计分**：{record['invalid_reason']}", ""]
     lines += ["| 席位 | 角色 | 模型 | 私卡 | 讨论前 | 讨论后 |", "|---|---|---|---|---|---|"]
     for s in record["seats"]:
-        lines.append(f"| {s['seat']} | {s['role']} | {s['provider']}/{s['model']} | {s['card'] or '—'} "
+        model = f"{s['provider']}/{s['model']}" + (f" ({s['effort']})" if s.get("effort") else "")
+        lines.append(f"| {s['seat']} | {s['role']} | {model} | {s['card'] or '—'} "
                      f"| {s['pre_pick']} | {s['final_pick']} |")
     lines += ["", f"发言顺序：{record['speaking_order']}，共 {record['rounds']} 轮", ""]
     for m in record["transcript"]:
@@ -492,12 +594,36 @@ def score(out: Path, answer_key_path: Path) -> dict:
         answer = key[game["question"]]
         picks = [s["final_pick"] for s in game["seats"]]
         majority, votes = Counter(picks).most_common(1)[0] if picks else (None, 0)
-        rows.append({"game": game["game"], "correct": answer["correct"],
+        rows.append({"game": game["game"], "question": game["question"], "condition": game.get("condition"),
+                     "role": game["seats"][0]["role"] if game.get("condition") == "solo_full" else None,
+                     "correct": answer["correct"],
                      "pre_correct": sum(s["pre_pick"] == answer["correct"] for s in game["seats"]),
                      "final_correct": sum(p == answer["correct"] for p in picks), "seats": len(picks),
                      "majority": majority if votes * 2 > len(picks) else None,
                      "unanimous": len(set(picks)) == 1, "unparsed_final": picks.count(None)})
     result = {"answer_key_sha256": sha256_bytes(Path(answer_key_path).read_bytes()), "games": rows,
-              "invalid_games": invalid}
+              "invalid_games": invalid, "calls": call_stats(Path(out))}
     (Path(out) / "score.json").write_text(json.dumps(result, ensure_ascii=False, indent=1))
     return result
+
+
+def call_stats(out: Path) -> dict:
+    """Per game and provider: calls (valid or not), summed call seconds, tokens and cost as the CLI reported them.
+
+    cost_usd stays None for a provider unless every one of its calls reported a cost; codex and agy report none.
+    """
+    games: Dict[str, dict] = {}
+    path = out / "calls.jsonl"
+    for line in path.read_text().splitlines() if path.exists() else []:
+        call = json.loads(line)
+        g = games.setdefault(call["game"], {}).setdefault(call["provider"], {
+            "calls": 0, "invalid_calls": 0, "call_seconds": 0.0, "tokens": {}, "cost_usd": 0.0})
+        g["calls"] += 1
+        g["invalid_calls"] += call.get("valid") is not True
+        g["call_seconds"] = round(g["call_seconds"] + (call.get("seconds") or 0), 1)
+        meta = call.get("meta") or {}
+        for key, value in (meta.get("usage") or {}).items():
+            g["tokens"][key] = g["tokens"].get(key, 0) + value
+        cost = meta.get("cost_usd")
+        g["cost_usd"] = None if cost is None or g["cost_usd"] is None else round(g["cost_usd"] + cost, 6)
+    return games

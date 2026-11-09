@@ -9,6 +9,10 @@ Examples:
     python3 scripts/run_clueeval.py run --mode real --routing <hub_settings.json> --rounds 2 \
         --output output/clueeval/smoke
 
+    # Single-agent baseline: every routed role alone with all materials, 3 repeats each:
+    python3 scripts/run_clueeval.py run --mode real --routing <hub_settings.json> --condition solo_full --games 3 \
+        --output output/clueeval/solo
+
     # Score afterwards; this is the only step that opens the answer key:
     python3 scripts/run_clueeval.py score --output output/clueeval/smoke
 """
@@ -61,6 +65,10 @@ def run(args) -> int:
         "routing_sha256": C.sha256_bytes(args.routing.read_bytes()) if args.routing else None,
         # What this script did, not an audit of the CLI subprocesses; those are checked per call (valid/invalid_reasons).
         "answer_key_opened_by_harness": False,
+        # Which layer the numbers speak for: these CLIs on their daily routes in a fixed round-robin discussion.
+        # Unity's own orchestration (personas, publish_message, invoke_agent, memory) is not on this path.
+        "harness_layer": "direct-cli-round-robin",
+        "seats": {},
     }
     if args.mode == "real":
         manifest["cli_versions"] = {c: _cli_version(c) for c in ("claude", "codex", "agy")}
@@ -71,15 +79,21 @@ def run(args) -> int:
     invalid = 0
     for qid in selected:
         q = questions[qid]
-        n = len(q["cards"])
-        if routing is not None:
-            seats = C.resolve_roster(routing, n)
-        else:
-            seats = [C.Seat(i, f"fixture-{i + 1}", "fixture", "fixture") for i in range(n)]
         respond = C.cli_responder(args.cli_timeout) if args.mode == "real" else C.fixture_responder(q)
         for condition in args.condition:
-            for game in range(args.games):
-                record = C.run_game(q, game, condition, args.rounds, seats, respond, writer)
+            # The table seats one role per card; the solo baseline seats every routed role, one at a time.
+            n = len(C.DEFAULT_ROSTER) if condition == "solo_full" else len(q["cards"])
+            if routing is not None:
+                seats = C.resolve_roster(routing, n)
+            else:
+                seats = [C.Seat(i, f"fixture-{i + 1}", "fixture", "fixture") for i in range(n)]
+            manifest["seats"][f"{qid}/{condition}"] = [
+                {"role": s.role, "provider": s.provider, "model": s.model, "effort": s.effort} for s in seats]
+            (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+            tables = [[C.Seat(0, s.role, s.provider, s.model, s.effort)] for s in seats] \
+                if condition == "solo_full" else [seats]
+            for game, table in ((g, t) for g in range(args.games) for t in tables):
+                record = C.run_game(q, game, condition, args.rounds, table, respond, writer)
                 print(record["game"], [(s["card"], s["pre_pick"], s["final_pick"]) for s in record["seats"]],
                       "" if record["valid"] else f"INVALID: {record['invalid_reason']}", flush=True)
                 invalid += not record["valid"]
