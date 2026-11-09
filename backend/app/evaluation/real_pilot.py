@@ -207,13 +207,17 @@ def audit_claude_stream(database_path, mission_id, turn_id):
     and every content block, whole or partial, must be text, thinking or a hub
     tool call: a block that only ever streamed as a partial still ran (#162).
     Each record (one per CLI process) must show it whole, so a turn with no
-    record, a record whose init never reached it, and a record that never
-    finished, dropped lines at its size cap or was cut at the reader's entry
-    limit (#161) are not clean.
+    record, a file of the turn that does not read back whole as its record, a
+    record whose init never reached it, and a record that never finished,
+    dropped lines at its size cap or was cut at the reader's entry limit (#161)
+    are not clean.
     """
-    records = read_records(database_path, mission_id, turn_id)
+    records = read_records(database_path, mission_id, turn_id, strict=True)
     problems = [] if records else ["claude init event not recorded"]
     for record in records:
+        if record.get("error"):
+            problems.append("claude turn record unreadable: " + record["error"])
+            continue
         entries, inits = record["entries"], 0
         exit_entry = next((e for e in entries if e.get("kind") == "exit"), None)
         if any(e.get("kind") == "omitted" for e in entries):

@@ -217,6 +217,14 @@ def test_unsupported_seat_provider_rejected(harness):
         make(QUESTIONS["q1-storage"], "x", seats)
 
 
+class HeaderlessRecord(TurnRecord):
+    """A record whose first write, the header, failed: an empty file that records nothing more."""
+
+    def _write(self, entry, *, force=False):
+        self._close_stream()
+        return False
+
+
 class ClaudeStreamCLI(FakeCLI):
     """A claude seat: records its stream as the real adapter does, then publishes and bills.
 
@@ -233,8 +241,12 @@ class ClaudeStreamCLI(FakeCLI):
     deltas = 0  # content_block_delta lines, the bulk of a long reply
     max_bytes = MAX_RECORD_BYTES
     finished = True  # False: the record loses its exit line
+    headerless = False  # True: another process of the turn left only an empty file
 
     def run_turn(self, mission_id, agent_id, turn_id, provider_id, prompt, tools):
+        if self.headerless:
+            HeaderlessRecord(tools.repository.database_path, mission_id=mission_id, turn_id=turn_id,
+                             agent_id=agent_id, provider_id=provider_id, route="chat")
         record = TurnRecord(tools.repository.database_path, mission_id=mission_id, turn_id=turn_id,
                             agent_id=agent_id, provider_id=provider_id, route="chat", max_bytes=self.max_bytes)
 
@@ -291,6 +303,8 @@ WEB_SEARCH = {"type": "server_tool_use", "name": "web_search", "input": {"query"
     ({"max_bytes": 1000, "blocks": [{**WEB_SEARCH, "input": {"query": "x" * 2000}}]}, "claude turn record truncated"),
     ({"deltas": 20000}, "claude turn record cut at the read limit"),
     ({"finished": False}, "claude turn record unfinished"),
+    # A file of the turn that does not read back is reported, not skipped, beside a whole record.
+    ({"headerless": True}, "claude turn record unreadable: no header"),
 ])
 def test_claude_turn_that_is_not_provably_closed_book_voids_the_game(harness, tmp_path, change, reason):
     q = QUESTIONS["q1-storage"]
@@ -303,6 +317,9 @@ def test_claude_turn_that_is_not_provably_closed_book_voids_the_game(harness, tm
     assert reason in record["invalid_reason"]
     assert len(FakeCLI.calls) == 1  # the gate stops at the first such turn
     assert reason in ledger.calls[0]["prohibited_native_tools"]
+    if change.get("headerless"):
+        files = list((tmp_path / "hub" / "turn-records").glob("*/*.jsonl"))
+        assert len(files) == 2 and sum(path.stat().st_size == 0 for path in files) == 1
 
 
 def test_claude_audit_needs_each_record_whole(tmp_path):
@@ -326,6 +343,71 @@ def test_claude_audit_needs_each_record_whole(tmp_path):
     assert audit_claude_stream(database, "m", "t") == ["claude init event not recorded"]
     record(init, text, finished=False)
     assert audit_claude_stream(database, "m", "t") == ["claude init event not recorded", "claude turn record unfinished"]
+
+
+def test_claude_audit_reports_a_file_of_the_turn_it_cannot_read(tmp_path):
+    """#161: a whole, clean record does not vouch for a file of its turn that lost its header."""
+    database = tmp_path / "eval.sqlite3"
+    init = {"type": "system", "subtype": "init", "tools": list(CLAUDE_HUB_TOOLS[:3]), "mcp_servers": [{"name": "yiren_hub"}]}
+    clean = TurnRecord(database, mission_id="m", turn_id="t", agent_id="chulan", provider_id="claude", route="chat")
+    clean.stream("stdout", json.dumps(init))
+    clean.finish(exit_code=0)
+    assert audit_claude_stream(database, "m", "t") == []
+    HeaderlessRecord(database, mission_id="m", turn_id="t", agent_id="chulan", provider_id="claude", route="chat")
+    assert audit_claude_stream(database, "m", "t") == ["claude turn record unreadable: no header"]
+
+
+@pytest.mark.parametrize("damage,reason", [
+    ("bad-header", "invalid header"),
+    ("wrong-turn", "header names another turn"),
+    ("broken-json", "a line is not an entry"),
+    ("read-failure", "could not be read"),
+])
+def test_claude_game_stops_on_a_damaged_second_record(harness, tmp_path, monkeypatch, damage, reason):
+    unreadable = set()
+    original_open = Path.open
+
+    def failed_open(path, *args, **kwargs):
+        if path in unreadable:
+            raise PermissionError("fixture read failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failed_open)
+
+    class DamagedRecordCLI(ClaudeStreamCLI):
+        def run_turn(self, mission_id, agent_id, turn_id, provider_id, prompt, tools):
+            outcome = super().run_turn(mission_id, agent_id, turn_id, provider_id, prompt, tools)
+            extra = TurnRecord(tools.repository.database_path, mission_id=mission_id, turn_id=turn_id,
+                               agent_id=agent_id, provider_id=provider_id, route="chat")
+            extra.stream("stdout", json.dumps({"type": "system", "subtype": "init",
+                         "tools": self.init_tools, "mcp_servers": [{"name": "yiren_hub"}]}))
+            extra.finish(exit_code=0)
+            entries = [json.loads(line) for line in extra.path.read_text().splitlines()]
+            if damage == "bad-header":
+                del entries[0]["schema"]
+            elif damage == "wrong-turn":
+                entries[0]["turn_id"] = "another-turn"
+            extra.path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+            if damage == "broken-json":
+                with extra.path.open("a") as stream:
+                    stream.write("{broken\n")
+            elif damage == "read-failure":
+                unreadable.add(extra.path)
+            return outcome
+
+    q = QUESTIONS["q1-storage"]
+    seats = claude_table(len(q["cards"]))
+    ledger, make = harness(seats, factory_cli=DamagedRecordCLI)
+    record = C.run_game(q, 0, "private", 1, seats, make(q, "damaged-g0", seats).respond, C.GameWriter(tmp_path))
+    problem = "claude turn record unreadable: " + reason
+    assert not record["valid"]
+    assert problem in record["invalid_reason"]
+    assert len(FakeCLI.calls) == len(ledger.calls) == 1
+    assert ledger.stop_reason  # subsequent games in the batch cannot schedule more CLI calls
+    assert ledger.calls[0]["prohibited_native_tools"] == [problem]
+    next_game = C.run_game(q, 1, "private", 1, seats, make(q, "next-g1", seats).respond, C.GameWriter(tmp_path))
+    assert not next_game["valid"]
+    assert len(FakeCLI.calls) == len(ledger.calls) == 1
 
 
 def test_claude_seat_argv_is_closed_book():
