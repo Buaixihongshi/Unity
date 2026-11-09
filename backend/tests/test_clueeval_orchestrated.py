@@ -14,11 +14,11 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.adapters.base import TurnOutcome
-from backend.app.adapters.turn_record import TurnRecord
+from backend.app.adapters.turn_record import MAX_RECORD_BYTES, TurnRecord
 from backend.app.domain.models import TurnStatus
 from backend.app.evaluation import clueeval as C
 from backend.app.evaluation import clueeval_hub as H
-from backend.app.evaluation.real_pilot import CLAUDE_HUB_TOOLS, ROOT, BudgetedAdapter, Ledger, model_args
+from backend.app.evaluation.real_pilot import CLAUDE_HUB_TOOLS, ROOT, BudgetedAdapter, Ledger, audit_claude_stream, model_args
 from backend.app.mcp.tools import MCPToolError
 from backend.app.settings import Settings
 from backend.app.storage.repository import Repository
@@ -218,21 +218,44 @@ def test_unsupported_seat_provider_rejected(harness):
 
 
 class ClaudeStreamCLI(FakeCLI):
-    """A claude seat: records its stream as the real adapter does, then publishes and bills."""
+    """A claude seat: records its stream as the real adapter does, then publishes and bills.
+
+    The stream has the real probe's shape (--include-partial-messages): each block
+    opens in a partial message, then the assistant event repeats them whole.
+    """
 
     init_tools = list(CLAUDE_HUB_TOOLS[:3])  # what --tools "" left in the real probe (A2A off)
     blocks = [{"type": "thinking", "thinking": ""},
               {"type": "tool_use", "name": "mcp__yiren_hub__publish_message", "input": {}}]
     record_init = True
+    partial = True
+    whole = True
+    deltas = 0  # content_block_delta lines, the bulk of a long reply
+    max_bytes = MAX_RECORD_BYTES
+    finished = True  # False: the record loses its exit line
 
     def run_turn(self, mission_id, agent_id, turn_id, provider_id, prompt, tools):
         record = TurnRecord(tools.repository.database_path, mission_id=mission_id, turn_id=turn_id,
-                            agent_id=agent_id, provider_id=provider_id, route="chat")
+                            agent_id=agent_id, provider_id=provider_id, route="chat", max_bytes=self.max_bytes)
+
+        def emit(event):
+            record.stream("stdout", json.dumps(event))
+
         if self.record_init:
-            record.stream("stdout", json.dumps({"type": "system", "subtype": "init", "model": "claude-opus-5-5",
-                                                "tools": self.init_tools,
-                                                "mcp_servers": [{"name": "yiren_hub", "status": "connected"}]}))
-        record.stream("stdout", json.dumps({"type": "assistant", "message": {"content": self.blocks}}))
+            emit({"type": "system", "subtype": "init", "model": "claude-opus-5-5", "tools": self.init_tools,
+                  "mcp_servers": [{"name": "yiren_hub", "status": "connected"}]})
+        if self.partial:
+            emit({"type": "stream_event", "event": {"type": "message_start", "message": {"content": []}}})
+            for index, block in enumerate(self.blocks):
+                emit({"type": "stream_event",
+                      "event": {"type": "content_block_start", "index": index, "content_block": block}})
+        for _ in range(self.deltas):
+            emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                                                    "delta": {"type": "thinking_delta", "thinking": "嗯"}}})
+        if self.whole:
+            emit({"type": "assistant", "message": {"content": self.blocks}})
+        if not self.finished:
+            record._close_stream()  # as a failed write leaves it: finish() can no longer add the exit line
         record.finish(exit_code=0)
         return super().run_turn(mission_id, agent_id, turn_id, provider_id, prompt, tools)
 
@@ -241,10 +264,11 @@ def claude_table(n):
     return [C.Seat(i, role, "claude", "opus", "max") for i, role in enumerate(C.DEFAULT_ROSTER[:n])]
 
 
-def test_claude_seats_play_a_closed_book_game(harness, tmp_path):
+@pytest.mark.parametrize("change", [{}, {"whole": False}], ids=["partial-and-whole", "partial-only"])
+def test_claude_seats_play_a_closed_book_game(harness, tmp_path, change):
     q = QUESTIONS["q1-storage"]
     seats = claude_table(len(q["cards"]))
-    ledger, make = harness(seats, factory_cli=ClaudeStreamCLI)
+    ledger, make = harness(seats, factory_cli=type("ClaudeCLI", (ClaudeStreamCLI,), change))
     record = C.run_game(q, 0, "private", 1, seats, make(q, "claude-g0", seats).respond, C.GameWriter(tmp_path))
 
     assert record["valid"], record["invalid_reason"]
@@ -252,11 +276,21 @@ def test_claude_seats_play_a_closed_book_game(harness, tmp_path):
     assert all(call["prohibited_native_tools"] == [] for call in ledger.calls)
 
 
+WEB_SEARCH = {"type": "server_tool_use", "name": "web_search", "input": {"query": "q1-storage"}}
+
+
 @pytest.mark.parametrize("change, reason", [
     ({"init_tools": [*CLAUDE_HUB_TOOLS[:3], "WebSearch"]}, "claude tools beyond the hub: WebSearch"),
     ({"record_init": False}, "claude init event not recorded"),
-    ({"blocks": [{"type": "server_tool_use", "name": "web_search", "input": {}}]},
-     "claude content block server_tool_use web_search"),
+    ({"partial": False, "blocks": [WEB_SEARCH]}, "claude content block server_tool_use web_search"),
+    # #162: a call that only ever streamed as a partial, never repeated whole.
+    ({"whole": False, "blocks": [WEB_SEARCH]}, "claude content block server_tool_use web_search"),
+    ({"whole": False, "blocks": [{"type": "tool_use", "name": "Bash", "input": {}}]}, "claude content block tool_use Bash"),
+    # #161: the record cannot show the whole turn. The size cap drops the search line itself;
+    # a long reply runs past read_records' default entry limit; the exit line never lands.
+    ({"max_bytes": 1000, "blocks": [{**WEB_SEARCH, "input": {"query": "x" * 2000}}]}, "claude turn record truncated"),
+    ({"deltas": 20000}, "claude turn record cut at the read limit"),
+    ({"finished": False}, "claude turn record unfinished"),
 ])
 def test_claude_turn_that_is_not_provably_closed_book_voids_the_game(harness, tmp_path, change, reason):
     q = QUESTIONS["q1-storage"]
@@ -269,6 +303,29 @@ def test_claude_turn_that_is_not_provably_closed_book_voids_the_game(harness, tm
     assert reason in record["invalid_reason"]
     assert len(FakeCLI.calls) == 1  # the gate stops at the first such turn
     assert reason in ledger.calls[0]["prohibited_native_tools"]
+
+
+def test_claude_audit_needs_each_record_whole(tmp_path):
+    """Two CLI processes in one turn: a clean first record does not vouch for the second."""
+    database = tmp_path / "eval.sqlite3"
+    init = {"type": "system", "subtype": "init", "tools": list(CLAUDE_HUB_TOOLS[:3]), "mcp_servers": [{"name": "yiren_hub"}]}
+    text = {"type": "assistant", "message": {"content": [{"type": "text", "text": "结论"}]}}
+
+    def record(*events, finished=True):
+        writer = TurnRecord(database, mission_id="m", turn_id="t", agent_id="chulan", provider_id="claude", route="chat")
+        for event in events:
+            writer.stream("stdout", json.dumps(event))
+        if not finished:
+            writer._close_stream()  # a failed write: no exit line
+        writer.finish(exit_code=0)
+
+    assert audit_claude_stream(database, "m", "t") == ["claude init event not recorded"]  # no record at all
+    record(init, text)
+    assert audit_claude_stream(database, "m", "t") == []
+    record(text)
+    assert audit_claude_stream(database, "m", "t") == ["claude init event not recorded"]
+    record(init, text, finished=False)
+    assert audit_claude_stream(database, "m", "t") == ["claude init event not recorded", "claude turn record unfinished"]
 
 
 def test_claude_seat_argv_is_closed_book():

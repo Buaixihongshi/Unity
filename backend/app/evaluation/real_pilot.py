@@ -182,16 +182,47 @@ def audit_transport_reads(diagnostics_dir, turn_id, native):
     return prohibited, safe_reads
 
 
+def _content_blocks(event):
+    """The content blocks a claude stream event shows: a whole assistant message's,
+    or one a partial message opens (content_block_start, message_start)."""
+    if event.get("type") == "stream_event":
+        event = event.get("event")
+        if not isinstance(event, dict):
+            return []
+        if event.get("type") == "content_block_start":
+            return [event.get("content_block")]
+        if event.get("type") != "message_start":
+            return []
+    elif event.get("type") != "assistant":
+        return []
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, list) else []
+
+
 def audit_claude_stream(database_path, mission_id, turn_id):
-    """A closed-book claude turn, from its own recorded stream; [] when clean.
+    """A closed-book claude turn, from its own recorded stream; its distinct problems, [] when clean.
 
     The init event must offer the hub tools and nothing else from yiren_hub alone,
-    and every assistant block must be text, thinking or a hub tool call. A turn
-    whose init never reached the turn record cannot be shown clean, so it is not.
+    and every content block, whole or partial, must be text, thinking or a hub
+    tool call: a block that only ever streamed as a partial still ran (#162).
+    Each record (one per CLI process) must show it whole, so a turn with no
+    record, a record whose init never reached it, and a record that never
+    finished, dropped lines at its size cap or was cut at the reader's entry
+    limit (#161) are not clean.
     """
-    problems, inits = [], 0
-    for record in read_records(database_path, mission_id, turn_id):
-        for entry in record["entries"]:
+    records = read_records(database_path, mission_id, turn_id)
+    problems = [] if records else ["claude init event not recorded"]
+    for record in records:
+        entries, inits = record["entries"], 0
+        exit_entry = next((e for e in entries if e.get("kind") == "exit"), None)
+        if any(e.get("kind") == "omitted" for e in entries):
+            problems.append("claude turn record cut at the read limit")
+        elif exit_entry is None:
+            problems.append("claude turn record unfinished")
+        elif exit_entry.get("truncated") or exit_entry.get("dropped_lines"):
+            problems.append("claude turn record truncated")
+        for entry in entries:
             if entry.get("kind") != "stdout":
                 continue
             try:
@@ -208,18 +239,19 @@ def audit_claude_stream(database_path, mission_id, turn_id):
                     problems.append("claude tools beyond the hub: " + ", ".join(extra))
                 if servers != ["yiren_hub"]:
                     problems.append("claude MCP servers: " + (", ".join(servers) or "<none>"))
-            elif event.get("type") == "assistant":
-                for block in (event.get("message") or {}).get("content") or []:
-                    kind = block.get("type") if isinstance(block, dict) else None
-                    if kind in ("text", "thinking", "redacted_thinking"):
-                        continue
-                    if kind == "tool_use" and block.get("name") in CLAUDE_HUB_TOOLS:
-                        continue
-                    name = block.get("name") if isinstance(block, dict) else None
-                    problems.append(f"claude content block {kind}" + (f" {name}" if name else ""))
-    if not inits:
-        problems.append("claude init event not recorded")
-    return problems
+                continue
+            for block in _content_blocks(event):
+                kind = block.get("type") if isinstance(block, dict) else None
+                if kind in ("text", "thinking", "redacted_thinking"):
+                    continue
+                if kind == "tool_use" and block.get("name") in CLAUDE_HUB_TOOLS:
+                    continue
+                name = block.get("name") if isinstance(block, dict) else None
+                problems.append(f"claude content block {kind}" + (f" {name}" if name else ""))
+        if not inits:
+            problems.append("claude init event not recorded")
+    # A block streams as a partial and then comes whole: one finding, not two.
+    return list(dict.fromkeys(problems))
 
 
 class BudgetedAdapter(CLIAdapter):
