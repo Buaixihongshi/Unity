@@ -3,9 +3,14 @@
 import Cocoa
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
     private static let projectKey = "ProjectDirectory"
     private static let zoomKey = "PageZoom"
+    // Sparkle's own preference keys, so the settings toggle keeps its value
+    // once the real updater is wired in.
+    private static let autoDownloadKey = "SUAutomaticallyUpdate"
+    private static let lastCheckKey = "SULastCheckTime"
+    private static let iso8601 = ISO8601DateFormatter()
     private static let minZoom: CGFloat = 0.5
     private static let maxZoom: CGFloat = 3.0
     private static let zoomStep: CGFloat = 0.1
@@ -35,6 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         buildMenu()
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        // Registered on the content controller, which retains the handler; the
+        // delegate is an application-lifetime object, so the cycle is harmless.
+        let content = WKUserContentController()
+        content.add(self, name: "unityBridge")
+        config.userContentController = content
         webView = WKWebView(frame: .zero, configuration: config)
         let savedZoom = UserDefaults.standard.double(forKey: Self.zoomKey)
         if savedZoom >= Double(Self.minZoom) && savedZoom <= Double(Self.maxZoom) {
@@ -429,6 +439,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         webView.loadHTMLString(html, baseURL: nil)
     }
 
+    // MARK: Page bridge (desktop update UI)
+
+    // The page receives document CustomEvents named "unity-bridge" and sends
+    // commands back through window.webkit.messageHandlers.unityBridge. The
+    // handler is visible to every frame this view loads, so commands are only
+    // accepted from the app's own main frame on the loopback origin —
+    // preview iframes and any error page must not be able to drive the shell.
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard message.name == "unityBridge",
+              message.frameInfo.isMainFrame,
+              let frameURL = message.frameInfo.request.url,
+              isApp(frameURL) else { return }
+        guard let body = message.body as? [String: Any],
+              let type = body["type"] as? String else { return }
+        switch type {
+        case "setAutoDownload":
+            guard let value = body["value"] as? Bool else { return }
+            UserDefaults.standard.set(value, forKey: Self.autoDownloadKey)
+            pushBridgeState()
+        case "checkForUpdates":
+            // No updater is wired into this build yet. Stay silent instead of
+            // faking a check; Sparkle takes over this command when it lands.
+            break
+        case "installNow":
+            // Becomes "restart and install" once the Sparkle driver is wired in.
+            break
+        default:
+            break
+        }
+    }
+
+    private var appVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0"
+    }
+
+    /// Sparkle reads the same key; an unset value means the Info.plist default (on).
+    private var autoDownload: Bool {
+        UserDefaults.standard.object(forKey: Self.autoDownloadKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: Self.autoDownloadKey)
+    }
+
+    private func pushBridgeState() {
+        let lastChecked = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date
+        pushBridgeEvent([
+            "type": "state",
+            "appVersion": appVersion,
+            "autoDownload": autoDownload,
+            "lastCheckedAt": lastChecked.map { Self.iso8601.string(from: $0) } ?? NSNull(),
+            // The update driver is not wired in yet; a disabled check button
+            // tells the truth about this build rather than a check that never runs.
+            "canCheck": false,
+        ])
+    }
+
+    private func pushBridgeEvent(_ detail: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: detail),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript(
+            "document.dispatchEvent(new CustomEvent('unity-bridge',{detail:\(json)}))",
+            completionHandler: nil)
+    }
+
     // MARK: Navigation, popups and downloads
 
     private func isApp(_ url: URL?) -> Bool { url?.host == "127.0.0.1" && url?.port == port }
@@ -446,6 +521,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         decisionHandler(response.canShowMIMEType ? .allow : .download)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard isApp(webView.url) else { return }
+        // The frontend treats the first state event as "desktop mode", and its
+        // listener attaches on React mount, after this callback fires. Duplicate
+        // state pushes are idempotent, so re-send to also cover slow loads.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.pushBridgeState() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.pushBridgeState() }
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
