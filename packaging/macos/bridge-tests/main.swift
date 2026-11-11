@@ -30,8 +30,16 @@ func expect(_ name: String, _ condition: Bool, _ detail: String = "") {
 
 // MARK: Runloop helpers — WKWebView and DispatchWorkItem both need the main runloop.
 
+// run(mode:before:) returns as soon as it has serviced ONE event, so a bare
+// call is not a reliable delay — with WebKit's event sources flowing, a
+// "1.5s settle" could return in milliseconds (#171 fail-control caught this:
+// the second automatic push then landed inside the next assertion window).
+// Pump in slices until the deadline has actually passed.
 func pump(_ seconds: TimeInterval) {
-    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(seconds))
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
 }
 
 func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
@@ -164,6 +172,7 @@ func freeLoopbackPort() -> UInt16 {
 // MARK: Fixture pages
 
 let pageScript = """
+window.__docNonce = Math.random().toString(36).slice(2) + '.' + String(Date.now());
 window.stateEvents = 0;
 window.lastState = null;
 document.addEventListener('unity-bridge', function (e) {
@@ -182,7 +191,9 @@ window.postToBridge = function (cmd) {
 // Every fixture page sets window.__fixturePage: webView.url flips when a
 // navigation STARTS, while evaluateJavaScript keeps hitting the outgoing
 // document until the new one commits, so page identity has to be read from
-// the page itself.
+// the page itself. Each document also gets a random __docNonce: the tag
+// distinguishes pages, but a reload serves the same tag again — only a
+// changed nonce proves the reloaded document has committed (#171).
 let entryPage = """
 <!doctype html><html><body><div id="ok">entry</div>
 <iframe id="nested" src="/nested-frame.html"></iframe>
@@ -286,11 +297,18 @@ delegate.webView = webView
 // readyState and webView.url are both unreliable navigation signals: the
 // outgoing page already reports "complete", and webView.url flips when the
 // navigation starts while evaluateJavaScript keeps hitting the old document
-// until the new one commits. Page identity comes from the page itself.
+// until the new one commits. Page identity comes from the page itself — and
+// it must include the nonce, not just the tag: / and /?late=1 share the
+// 'entry' tag, so a tag-only check passes on the outgoing document and a
+// following reload() then cancels the in-flight navigation and reloads the
+// OLD url (#171's second face). The first load has no outgoing document
+// (nonce reads nil); a fresh nonce plus the tag is enough there.
 func loadAndWait(_ url: URL, tag: String) {
+    let outgoingNonce = js(webView, "window.__docNonce") as? String ?? "nil"
     webView.load(URLRequest(url: url))
     _ = pumpUntil(10) {
         (js(webView, "window.__fixturePage") as? String) == tag
+            && (js(webView, "window.__docNonce") as? String ?? "nil") != outgoingNonce
             && (js(webView, "document.readyState") as? String) == "complete"
     }
     // Let the didFinish state push (0.4s) land so absence assertions below
@@ -341,6 +359,10 @@ expect("T1 entry: setAutoDownload accepted from the entry document",
 expect("T1 entry: state push reflects the written preference",
        (js(webView, "window.lastState && window.lastState.autoDownload") as? Bool) == false)
 
+// Let any pending automatic pushes settle first (see T4: a single load can
+// land two didFinish callbacks, each scheduling its own 0.4s push), so only
+// the handshake answer can move the count.
+pump(1.5)
 let beforeGetState = jsInt(webView, "window.stateEvents")
 _ = js(webView, "window.postToBridge({type:'getState'})")
 _ = pumpUntil(3) { jsInt(webView, "window.stateEvents") > beforeGetState }
@@ -371,10 +393,46 @@ _ = pumpUntil(8) { (js(webView, "window.remount.ran") as? Bool) == true }
 expect("T3 late consumer: listener attached at 1.8s receives state via getState",
        jsInt(webView, "window.remount.events") >= 1)
 
+// #171: after reload() the outgoing document still answers evaluateJavaScript
+// with readyState "complete" and its accumulated stateEvents, so the previous
+// "wait for complete, then stateEvents >= 1" passed on the OLD document before
+// the new one committed. Reload from the plain entry page (T3's ?late=1 page
+// would recreate its 1.8s consumer, which posts getState itself and would
+// satisfy the push assertion through the handshake instead). Prove the new
+// document committed via the per-document nonce, then assert each state path
+// on that document.
+// #171: after reload() the outgoing document still answers evaluateJavaScript
+// with readyState "complete" and its accumulated stateEvents, so the previous
+// "wait for complete, then stateEvents >= 1" could pass on the OLD document —
+// a timing race with the new document's commit (the fail-control below shows
+// both outcomes). Reload from the plain entry page (T3's ?late=1 page would
+// recreate its 1.8s consumer, which posts getState itself and would satisfy
+// the push assertion through the handshake instead). Prove the new document
+// committed via the per-document nonce, then assert each state path on it.
+loadAndWait(entryURL("/"), tag: "entry")
+let oldNonce = js(webView, "window.__docNonce") as? String ?? "nil"
 webView.reload()
-_ = pumpUntil(10) { (js(webView, "document.readyState") as? String) == "complete" }
-expect("T4 reload: page receives state again after reload",
+expect("T4 reload: new document committed (per-document nonce changed)",
+       pumpUntil(10) {
+           (js(webView, "window.__docNonce") as? String ?? "nil") != oldNonce
+               && oldNonce != "nil"
+               && (js(webView, "document.readyState") as? String) == "complete"
+       })
+// The reloaded document counts stateEvents from zero, so only a state event
+// delivered to its own listener satisfies this — the automatic post-load push.
+expect("T4 reload: reloaded document receives the automatic state push",
        pumpUntil(6) { jsInt(webView, "window.stateEvents") >= 1 })
+// And the handshake, asked by the reloaded document itself, still answers.
+// Same settling pump as T2: one reload() can land TWO didFinish callbacks
+// (observed 7ms apart while fail-controlling #171), each scheduling its own
+// 0.4s push — without settling, the second push passes this assertion with
+// the handshake answer mutated away. Quiet first, then only the answer can
+// move the count.
+pump(1.5)
+let beforeHandshake = jsInt(webView, "window.stateEvents")
+_ = js(webView, "window.postToBridge({type:'getState'})")
+expect("T4 reload: getState handshake answers the reloaded document",
+       pumpUntil(6) { jsInt(webView, "window.stateEvents") > beforeHandshake })
 
 // --- #168 negatives: non-entry main-frame documents --------------------
 
