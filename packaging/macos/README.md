@@ -14,6 +14,7 @@ SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=<profile> ./scripts
 | `Contents/MacOS/Unity` | `UnityApp.swift` 编译的外壳：选空闲回环端口、启动后端、WKWebView 窗口、退出确认 |
 | `Contents/Resources/python` | uv 提供的可重定位 CPython 与运行时依赖；`unity-app.pth` 让任意 cwd 都能 `import backend` |
 | `Contents/Resources/app` | backend（不含 tests）、config、frontend/dist、`build-identity.json` |
+| `bridge-tests/` | 桌面桥回归套件（#168/#169）：真实 WKWebView 驱动外壳的处理器，macOS 本地跑 `./bridge-tests/run.sh`；CI 是 linux 无法承载 |
 
 图标源文件是 `AppIcon.svg`（莫比乌斯双色缎带，配色取自前端的 ink / paper / sage），打包时由 `render-svg.swift` 渲染成各尺寸 PNG；网页 favicon 是同一图形的深色简化版 `frontend/public/favicon.svg`。
 

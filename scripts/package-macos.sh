@@ -101,7 +101,7 @@ importlib.import_module("backend.app.extensions.tasks.adaptive")' "$RES/app/scri
   || { echo "ERROR: bundled Workflow modules do not import." >&2; exit 1; }
 
 echo "==> Native shell"
-swiftc -O -target "$ARCH-apple-macos12.0" -o "$APP/Contents/MacOS/Unity" "$ROOT/packaging/macos/UnityApp.swift"
+swiftc -O -target "$ARCH-apple-macos12.0" -o "$APP/Contents/MacOS/Unity" "$ROOT/packaging/macos/UnityApp.swift" "$ROOT/packaging/macos/main.swift"
 sed -e "s/@BUNDLE_ID@/$BUNDLE_ID/" -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" -e "s/@SHA@/$SHA/" \
   "$ROOT/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
