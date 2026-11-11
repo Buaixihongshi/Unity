@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from backend.app.domain.agent_registry import get_agent_registry
-from backend.app.domain.models import Message, Mission
+from backend.app.domain.models import Message, Mission, format_iso_utc as _iso_utc
 from backend.app.orchestration.interruption import INTERRUPTED_EVENT, REASON_LABELS
 from backend.app.orchestration.live_progress import get_live_progress_registry
 from backend.app.orchestration.turn_progress import HOST_PROGRESS_FIELDS, PROGRESS_NOTE_EVENT
@@ -60,6 +60,7 @@ def _mission_payload(mission: Mission) -> dict[str, object]:
     return payload
 
 
+
 def _event_metadata(provider_id: Optional[str], agent_id: Optional[str]) -> dict[str, str]:
     metadata: dict[str, str] = {}
     if provider_id is not None:
@@ -107,11 +108,7 @@ def _raw_event(event, sort_key: Optional[tuple[int, int]] = None) -> dict[str, o
         "agent_id": agent_id,
         "turn_id": payload.get("turn_id"),
         "metadata": _event_metadata(provider_id, agent_id),
-        "created_at": (
-            event.created_at.isoformat()
-            if isinstance(event.created_at, datetime)
-            else event.created_at
-        ),
+        "created_at": _iso_utc(event.created_at),
     }
     if sort_key is not None:
         thread_event["_sort_key"] = sort_key
@@ -134,11 +131,7 @@ def _artifact_records(settings: Settings, mission_id: str, db_events=None) -> li
             if not rel_path:
                 continue
             artifact_id = "{mid}:{path}".format(mid=mission_id, path=rel_path)
-            created_at = (
-                event.created_at.isoformat()
-                if isinstance(event.created_at, datetime)
-                else event.created_at
-            )
+            created_at = _iso_utc(event.created_at)
             from pathlib import PurePosixPath
             name = PurePosixPath(rel_path).name
             suffix = PurePosixPath(rel_path).suffix
@@ -211,12 +204,8 @@ def _derive_artifact_events(db_events) -> list[dict[str, object]]:
         payload = event.payload
         path = PurePosixPath(payload["path"])
         identity = f"{event.mission_id}:{path}"
-        created = event.created_at
-        if isinstance(created, str):
-            created = datetime.fromisoformat(created)
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        created_at = payload.get("saved_at") or created.isoformat()
+        saved_at = payload.get("saved_at")
+        created_at = _iso_utc(saved_at) if saved_at else _iso_utc(event.created_at)
         artifact = {
             "id": identity, "mission_id": event.mission_id,
             "title": payload.get("title") or path.name,
@@ -323,11 +312,7 @@ def _derive_turns(db_events) -> list[dict[str, object]]:
             turn["status"] = "completed"
             turn["provider_id"] = payload.get("provider_id")
             turn["duration_ms"] = payload.get("duration_ms")
-            turn["completed_at"] = (
-                event.created_at.isoformat()
-                if isinstance(event.created_at, datetime)
-                else event.created_at
-            )
+            turn["completed_at"] = _iso_utc(event.created_at)
         elif event.event_type == "turn.blocked":
             if turn["status"] != "completed":
                 turn["status"] = "blocked"
@@ -355,11 +340,7 @@ def _derive_tool_events(db_events) -> list[dict[str, object]]:
         if not event.event_type.startswith("tool.") and event.event_type != "provider.activity":
             continue
         payload = event.payload
-        created_at = (
-            event.created_at.isoformat()
-            if isinstance(event.created_at, datetime)
-            else event.created_at
-        )
+        created_at = _iso_utc(event.created_at)
         record = {
             "id": event.id,
             "mission_id": event.mission_id,
@@ -481,11 +462,7 @@ def _derive_interrupts(db_events) -> list[dict[str, object]]:
     for event in db_events:
         if event.event_type == "interrupt":
             payload = event.payload
-            created_at = (
-                event.created_at.isoformat()
-                if isinstance(event.created_at, datetime)
-                else event.created_at
-            )
+            created_at = _iso_utc(event.created_at)
             interrupts[str(event.id)] = {
                 "event_id": event.id,
                 "content": payload.get("content", ""),
@@ -500,11 +477,7 @@ def _derive_interrupts(db_events) -> list[dict[str, object]]:
             payload = event.payload
             interrupt_event_id = str(payload.get("interrupt_event_id", ""))
             if interrupt_event_id in interrupts:
-                created_at = (
-                    event.created_at.isoformat()
-                    if isinstance(event.created_at, datetime)
-                    else event.created_at
-                )
+                created_at = _iso_utc(event.created_at)
                 interrupts[interrupt_event_id]["status"] = "handled"
                 interrupts[interrupt_event_id]["handled_at"] = created_at
                 interrupts[interrupt_event_id]["handled_by_agent_id"] = payload.get("handled_by_agent_id")
@@ -562,11 +535,7 @@ def _derive_a2a_invocations(db_events) -> list[dict[str, object]]:
         if event.event_type != "a2a.invoke":
             continue
         payload = event.payload
-        created_at = (
-            event.created_at.isoformat()
-            if isinstance(event.created_at, datetime)
-            else event.created_at
-        )
+        created_at = _iso_utc(event.created_at)
         sender_turn_id = payload.get("sender_turn_id", "")
         idx = consumed.get(sender_turn_id, 0)
         target_turns = a2a_turns.get(sender_turn_id, [])
@@ -651,11 +620,7 @@ def _derive_thoughts(db_events) -> list[dict[str, object]]:
         if event.event_type != "agent.thought":
             continue
         payload = event.payload
-        created_at = (
-            event.created_at.isoformat()
-            if isinstance(event.created_at, datetime)
-            else event.created_at
-        )
+        created_at = _iso_utc(event.created_at)
         record = {
             "id": event.id,
             "mission_id": event.mission_id,
