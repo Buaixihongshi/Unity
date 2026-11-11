@@ -124,6 +124,17 @@ def test_packaging_keeps_its_interpreter_off_the_users_path():
     assert installs and all("--no-bin" in line for line in installs)
 
 
+def test_packaging_pins_bytecode_env_before_the_bundled_interpreter_runs():
+    """Issue #60: interpreter-auto-written .pyc embed absolute build paths and
+    compileall skips them as fresh (mtime match), so they survive into the
+    privacy scan; an inherited PYTHONPYCACHEPREFIX would additionally redirect
+    even compileall's own output out of the bundle."""
+    lines = (Path(__file__).resolve().parents[2] / "scripts/package-macos.sh").read_text().splitlines()
+    before_first_run = lines[:next(i for i, line in enumerate(lines) if '"$PY"' in line)]
+    assert any(line.strip() == "export PYTHONDONTWRITEBYTECODE=1" for line in before_first_run)
+    assert any(line.strip() == "unset PYTHONPYCACHEPREFIX" for line in before_first_run)
+
+
 def test_macos_status_mobius_path_covers_both_loops_and_shares_cruise():
     """Issue #115: macOS UnityApp.swift cruise path must cover both loops and share mobiusPath."""
     import re
