@@ -120,8 +120,8 @@ def pool(tmp_path, monkeypatch):
 
 def adapter(temp_settings, tmp_path, mode='normal', timeout=8):
     launcher = tmp_path/'agy'
-    launcher.write_text('#!' + sys.executable + '\nimport runpy\nrunpy.run_path(' +
-                        repr(str(Path(__file__).with_name('_fake_persistent_agy.py'))) + ', run_name="__main__")\n')
+    target = str(Path(__file__).with_name('_fake_persistent_agy.py').resolve())
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" -c "import runpy; runpy.run_path({repr(target)}, run_name=\'__main__\')" "$@"\n')
     launcher.chmod(0o700)
     return MCPSubprocessAdapter(str(launcher), [],
         db_path=temp_settings.database_path, artifact_root=temp_settings.artifact_root, timeout=timeout,
