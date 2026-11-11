@@ -11,11 +11,28 @@ except ImportError:  # pragma: no cover - compatibility for Python < 3.11
     class StrEnum(str, Enum):
         __str__ = str.__str__
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def format_iso_utc(value: object) -> str:
+    """Format datetime or ISO timestamp string with timezone.
+
+    If naive, assumes UTC. If already aware (including non-UTC offset),
+    preserves the exact instant.
+    """
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).isoformat()
+        except ValueError:
+            return value
+    return "" if value is None else str(value)
 
 
 class RoomMode(StrEnum):
@@ -226,3 +243,10 @@ class MissionEvent(BaseModel):
     event_type: str
     payload: dict[str, Any]
     created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("created_at", mode="after")
+    @classmethod
+    def _ensure_utc(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
