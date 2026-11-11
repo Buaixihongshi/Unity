@@ -8,6 +8,7 @@ interface DesktopSettingsSectionProps {
   bridgeState: BridgeState | null;
   onSetAutoDownload: (value: boolean) => void;
   onCheckForUpdates: () => void;
+  isChecking?: boolean;
   runtime?: RuntimeIdentity;
   frontend?: SourceIdentity;
 }
@@ -16,11 +17,14 @@ export function DesktopSettingsSection({
   bridgeState,
   onSetAutoDownload,
   onCheckForUpdates,
+  isChecking = false,
   runtime,
   frontend = typeof __FRONTEND_IDENTITY__ !== "undefined" ? __FRONTEND_IDENTITY__ : undefined,
 }: DesktopSettingsSectionProps) {
   const [copied, setCopied] = useState(false);
   const started = runtime?.started;
+  const canCheck = bridgeState?.canCheck !== false;
+  const isDisabled = !canCheck || isChecking;
 
   const formatLastChecked = (iso: string | null | undefined) => {
     if (!iso) return "从未检查";
@@ -104,15 +108,16 @@ export function DesktopSettingsSection({
               type="button"
               className="desktop-btn desktop-btn-secondary"
               onClick={onCheckForUpdates}
-              disabled={bridgeState?.canCheck === false}
+              disabled={isDisabled}
+              title={!canCheck ? "当前构建暂不支持检查更新" : undefined}
               data-testid="desktop-check-updates-btn"
             >
               <RefreshCw
                 size={14}
-                className={bridgeState?.canCheck === false ? "spin-icon" : ""}
+                className={isChecking ? "spin-icon" : ""}
                 aria-hidden="true"
               />
-              {bridgeState?.canCheck === false ? "正在检查…" : "检查更新"}
+              {isChecking ? "正在检查…" : "检查更新"}
             </button>
           </div>
         </div>

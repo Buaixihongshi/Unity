@@ -36,18 +36,44 @@ describe("DesktopSettingsSection", () => {
     expect(onCheckForUpdates).toHaveBeenCalledTimes(1);
   });
 
-  it("disables check button and shows checking state when canCheck is false", () => {
+  it("disables check button with honest tooltip and without spinning when canCheck is false", () => {
+    const onCheckForUpdates = vi.fn();
     render(
       <DesktopSettingsSection
         bridgeState={{ ...mockState, canCheck: false }}
         onSetAutoDownload={vi.fn()}
+        onCheckForUpdates={onCheckForUpdates}
+      />
+    );
+
+    const checkBtn = screen.getByTestId("desktop-check-updates-btn");
+    expect(checkBtn).toBeDisabled();
+    expect(checkBtn).toHaveTextContent("检查更新");
+    expect(checkBtn).toHaveAttribute("title", "当前构建暂不支持检查更新");
+
+    const icon = checkBtn.querySelector("svg");
+    expect(icon).not.toHaveClass("spin-icon");
+
+    fireEvent.click(checkBtn);
+    expect(onCheckForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("shows checking state and spinning animation when isChecking is true", () => {
+    render(
+      <DesktopSettingsSection
+        bridgeState={mockState}
+        onSetAutoDownload={vi.fn()}
         onCheckForUpdates={vi.fn()}
+        isChecking={true}
       />
     );
 
     const checkBtn = screen.getByTestId("desktop-check-updates-btn");
     expect(checkBtn).toBeDisabled();
     expect(checkBtn).toHaveTextContent("正在检查…");
+
+    const icon = checkBtn.querySelector("svg");
+    expect(icon).toHaveClass("spin-icon");
   });
 
   it("renders diagnostic information in folded details and allows copy", async () => {

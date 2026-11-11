@@ -120,8 +120,6 @@ function handleMockCommand(command: BridgeCommand): void {
     mockState = { ...mockState, autoDownload: command.value };
     dispatchMockBridgeEvent({ type: "state", ...mockState });
   } else if (command.type === "checkForUpdates") {
-    mockState = { ...mockState, canCheck: false };
-    dispatchMockBridgeEvent({ type: "state", ...mockState });
     window.setTimeout(() => {
       const now = new Date().toISOString();
       mockState = { ...mockState, canCheck: true, lastCheckedAt: now };

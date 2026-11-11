@@ -20,6 +20,7 @@ interface Props {
   bridgeState?: BridgeState | null;
   onSetAutoDownload?: (value: boolean) => void;
   onCheckForUpdates?: () => void;
+  isCheckingUpdates?: boolean;
   runtime?: RuntimeIdentity;
   frontend?: SourceIdentity;
 }
@@ -39,6 +40,7 @@ export function SettingsButton({
   bridgeState,
   onSetAutoDownload,
   onCheckForUpdates,
+  isCheckingUpdates,
   runtime,
   frontend,
 }: Props) {
@@ -94,6 +96,7 @@ export function SettingsButton({
           bridgeState={bridgeState}
           onSetAutoDownload={onSetAutoDownload}
           onCheckForUpdates={onCheckForUpdates}
+          isCheckingUpdates={isCheckingUpdates}
           runtime={runtime}
           frontend={frontend}
         />

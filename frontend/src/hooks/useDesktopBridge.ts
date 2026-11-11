@@ -21,6 +21,7 @@ export function useDesktopBridge() {
   const [state, setState] = useState<BridgeState | null>(null);
   const [updateNotice, setUpdateNotice] = useState<UpdateNotice>({ status: "idle" });
   const [dismissedVersion, setLocalDismissedVersion] = useState<string | null>(() => getDismissedVersion());
+  const [isChecking, setIsChecking] = useState(false);
 
   useEffect(() => {
     initMockBridgeIfEnabled();
@@ -38,6 +39,7 @@ export function useDesktopBridge() {
           canCheck: detail.canCheck,
         });
       } else if (detail.type === "update-found") {
+        setIsChecking(false);
         setUpdateNotice((prev) => ({
           ...prev,
           status: "found",
@@ -49,12 +51,14 @@ export function useDesktopBridge() {
           percent: detail.percent,
         }));
       } else if (detail.type === "update-ready") {
+        setIsChecking(false);
         setUpdateNotice({
           status: "ready",
           version: detail.version,
           willInstallOnQuit: detail.willInstallOnQuit,
         });
       } else if (detail.type === "up-to-date") {
+        setIsChecking(false);
         setState((prev) => (prev ? { ...prev, lastCheckedAt: detail.checkedAt, canCheck: true } : prev));
         setUpdateNotice((prev) => (prev.status === "ready" ? prev : { status: "idle" }));
       }
@@ -102,9 +106,10 @@ export function useDesktopBridge() {
   }, []);
 
   const checkForUpdates = useCallback(() => {
+    if (state?.canCheck === false) return;
+    setIsChecking(true);
     postBridgeCommand({ type: "checkForUpdates" });
-    setState((prev) => (prev ? { ...prev, canCheck: false } : prev));
-  }, []);
+  }, [state?.canCheck]);
 
   const installNow = useCallback(() => {
     postBridgeCommand({ type: "installNow" });
@@ -116,6 +121,7 @@ export function useDesktopBridge() {
     updateNotice,
     showCapsule,
     isDismissed,
+    isChecking,
     dismissCurrentUpdate,
     setAutoDownload,
     checkForUpdates,

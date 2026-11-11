@@ -188,6 +188,7 @@ export function MissionRoomPage(props: {
             bridgeState={desktopBridge.state}
             onSetAutoDownload={desktopBridge.setAutoDownload}
             onCheckForUpdates={desktopBridge.checkForUpdates}
+            isCheckingUpdates={desktopBridge.isChecking}
             runtime={props.onboarding?.health?.runtime}
           />
         </div>

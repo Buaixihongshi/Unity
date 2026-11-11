@@ -115,6 +115,7 @@ interface Props {
   bridgeState?: BridgeState | null;
   onSetAutoDownload?: (value: boolean) => void;
   onCheckForUpdates?: () => void;
+  isCheckingUpdates?: boolean;
   runtime?: import("../types").RuntimeIdentity;
   frontend?: import("../types").SourceIdentity;
 }
@@ -133,6 +134,7 @@ export function SettingsModal({
   bridgeState,
   onSetAutoDownload,
   onCheckForUpdates,
+  isCheckingUpdates,
   runtime,
   frontend,
 }: Props) {
@@ -1963,6 +1965,7 @@ export function SettingsModal({
                   bridgeState={bridgeState ?? null}
                   onSetAutoDownload={onSetAutoDownload ?? (() => {})}
                   onCheckForUpdates={onCheckForUpdates ?? (() => {})}
+                  isChecking={isCheckingUpdates}
                   runtime={runtime}
                   frontend={frontend}
                 />
