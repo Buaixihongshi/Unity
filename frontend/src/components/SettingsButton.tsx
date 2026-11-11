@@ -1,7 +1,8 @@
 import { useRef, useState, useCallback } from "react";
 import { Settings } from "lucide-react";
 import type { ProviderStatusState } from "../hooks/useProviderStatus";
-import type { HubSettingsPatch, HubSettingsView, OnboardingView } from "../types";
+import type { HubSettingsPatch, HubSettingsView, OnboardingView, RuntimeIdentity, SourceIdentity } from "../types";
+import type { BridgeState } from "../lib/desktopBridge";
 import { SettingsModal } from "./SettingsModal";
 
 interface Props {
@@ -15,6 +16,12 @@ interface Props {
   onVerifyProvider?: (providerId: string) => void;
   onSave: (patch: HubSettingsPatch) => void;
   onViewChange?: (view: HubSettingsView) => void;
+  isDesktop?: boolean;
+  bridgeState?: BridgeState | null;
+  onSetAutoDownload?: (value: boolean) => void;
+  onCheckForUpdates?: () => void;
+  runtime?: RuntimeIdentity;
+  frontend?: SourceIdentity;
 }
 
 export function SettingsButton({
@@ -28,6 +35,12 @@ export function SettingsButton({
   onVerifyProvider,
   onSave,
   onViewChange,
+  isDesktop,
+  bridgeState,
+  onSetAutoDownload,
+  onCheckForUpdates,
+  runtime,
+  frontend,
 }: Props) {
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -77,6 +90,12 @@ export function SettingsButton({
           onSave={handleSave}
           onViewChange={onViewChange}
           onClose={handleClose}
+          isDesktop={isDesktop}
+          bridgeState={bridgeState}
+          onSetAutoDownload={onSetAutoDownload}
+          onCheckForUpdates={onCheckForUpdates}
+          runtime={runtime}
+          frontend={frontend}
         />
       )}
     </>

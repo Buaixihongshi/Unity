@@ -14,12 +14,15 @@ import {
   SlidersHorizontal,
   Trash2,
   UsersRound,
+  Laptop,
   X,
 } from "lucide-react";
 import type { ProviderStatusState } from "../hooks/useProviderStatus";
 import { roleToneIndex } from "../lib/personaColors";
 import { ObservabilityOverview } from "./ObservabilityOverview";
 import { MemoryPanel } from "./MemoryPanel";
+import { DesktopSettingsSection } from "./DesktopSettingsSection";
+import type { BridgeState } from "../lib/desktopBridge";
 import { RoleEditor, type RoleRouteOption } from "./RoleEditor";
 import { EffortSelect, effortAfterModelChange, effortChoices, hasFixedEffort } from "./EffortSelect";
 import {
@@ -89,7 +92,7 @@ interface AgentDraft {
   clear?: boolean;
 }
 
-type SettingsSectionId = "team" | "runtime" | "extensions" | "observability" | "memory";
+type SettingsSectionId = "team" | "runtime" | "extensions" | "desktop" | "observability" | "memory";
 
 interface Props {
   view: {
@@ -108,6 +111,12 @@ interface Props {
   onViewChange?: (view: HubSettingsView) => void;
   onClose: () => void;
   conversationId?: string | null;
+  isDesktop?: boolean;
+  bridgeState?: BridgeState | null;
+  onSetAutoDownload?: (value: boolean) => void;
+  onCheckForUpdates?: () => void;
+  runtime?: import("../types").RuntimeIdentity;
+  frontend?: import("../types").SourceIdentity;
 }
 
 export function SettingsModal({
@@ -120,6 +129,12 @@ export function SettingsModal({
   onViewChange,
   onClose,
   conversationId,
+  isDesktop,
+  bridgeState,
+  onSetAutoDownload,
+  onCheckForUpdates,
+  runtime,
+  frontend,
 }: Props) {
   const [providerDraft, setProviderDraft] = useState<Record<string, boolean>>({});
   const [runtimeDraft, setRuntimeDraft] = useState<Record<string, string>>({});
@@ -978,6 +993,18 @@ export function SettingsModal({
               <Puzzle size={17} aria-hidden="true" />
               <span>扩展</span>
             </button>
+            {isDesktop ? (
+              <button
+                type="button"
+                className={activeSection === "desktop" ? "is-active" : ""}
+                aria-pressed={activeSection === "desktop"}
+                onClick={() => setActiveSection("desktop")}
+                data-testid="settings-nav-desktop"
+              >
+                <Laptop size={17} aria-hidden="true" />
+                <span>桌面应用</span>
+              </button>
+            ) : null}
             <button
               type="button"
               className={activeSection === "observability" ? "is-active" : ""}
@@ -1931,11 +1958,21 @@ export function SettingsModal({
                 </section>
               ) : null}
 
+              {activeSection === "desktop" ? (
+                <DesktopSettingsSection
+                  bridgeState={bridgeState ?? null}
+                  onSetAutoDownload={onSetAutoDownload ?? (() => {})}
+                  onCheckForUpdates={onCheckForUpdates ?? (() => {})}
+                  runtime={runtime}
+                  frontend={frontend}
+                />
+              ) : null}
+
               {activeSection === "observability" ? <ObservabilityOverview /> : null}
               {activeSection === "memory" ? <MemoryPanel conversationId={conversationId} /> : null}
             </div>
 
-            {activeSection === "observability" || activeSection === "memory" ? null : (
+            {activeSection === "observability" || activeSection === "memory" || activeSection === "desktop" ? null : (
               <div className="settings-modal-footer">
                 <div className="footer-status">
                   <span className={`status-dot dot-${hasDiff ? "warning" : "ready"}`} />

@@ -25,6 +25,8 @@ import { OnboardingCard, type OnboardingCardProps } from "./OnboardingCard";
 import { SettingsButton } from "./SettingsButton";
 import { TurnTimeline } from "./TurnTimeline";
 import { EnvironmentBadge } from "./EnvironmentBadge";
+import { UpdateCapsule } from "./UpdateCapsule";
+import { useDesktopBridge } from "../hooks/useDesktopBridge";
 import { SharedWorkWorkspace } from "./SharedWorkWorkspace";
 import "./WorkspaceShell.css";
 
@@ -102,6 +104,7 @@ export function MissionRoomPage(props: {
   const onPinnedChange = useCallback((pinned: boolean)=>setArtifactPinned(pinned),[]);
   const artifacts = collectConversationArtifacts(props.displayMessages);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const desktopBridge = useDesktopBridge();
   const tasksEnabled = props.tasksEnabled ?? false;
   const section = tasksEnabled ? props.section : "conversations";
   // Ordinary conversations hide the guide once they have turns; the welcome
@@ -158,23 +161,40 @@ export function MissionRoomPage(props: {
     <main className="mission-room task-room">
       <div className="mission-header-bar">
         <MissionHeader runtimeSummary={props.runtimeSummary} streamState={props.streamState} showRuntime={section !== "tasks"} />
-        <SettingsButton
-          view={props.hubSettings ?? null}
-          conversationId={props.selectedConversationId}
-          providerStatus={props.providerStatus}
-          onboarding={props.onboarding?.onboarding}
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-          onRefreshProviders={() => {
-            props.providerStatus.refresh();
-            props.onboarding?.onRefreshProviders();
-          }}
-          onVerifyProvider={props.onboarding?.onVerifyProvider}
-          onSave={props.onSaveSettings ?? (() => {})}
-          onViewChange={props.onSettingsViewChange}
-        />
+        <div className="mission-header-actions">
+          {desktopBridge.showCapsule ? (
+            <UpdateCapsule
+              notice={desktopBridge.updateNotice}
+              autoDownload={desktopBridge.state?.autoDownload ?? true}
+              onInstallNow={desktopBridge.installNow}
+              onDismiss={desktopBridge.dismissCurrentUpdate}
+            />
+          ) : null}
+          <SettingsButton
+            view={props.hubSettings ?? null}
+            conversationId={props.selectedConversationId}
+            providerStatus={props.providerStatus}
+            onboarding={props.onboarding?.onboarding}
+            open={settingsOpen}
+            onOpenChange={setSettingsOpen}
+            onRefreshProviders={() => {
+              props.providerStatus.refresh();
+              props.onboarding?.onRefreshProviders();
+            }}
+            onVerifyProvider={props.onboarding?.onVerifyProvider}
+            onSave={props.onSaveSettings ?? (() => {})}
+            onViewChange={props.onSettingsViewChange}
+            isDesktop={desktopBridge.isDesktop}
+            bridgeState={desktopBridge.state}
+            onSetAutoDownload={desktopBridge.setAutoDownload}
+            onCheckForUpdates={desktopBridge.checkForUpdates}
+            runtime={props.onboarding?.health?.runtime}
+          />
+        </div>
       </div>
-      <EnvironmentBadge runtime={props.onboarding?.health?.runtime} loading={props.onboarding?.healthLoading} />
+      {!desktopBridge.isDesktop ? (
+        <EnvironmentBadge runtime={props.onboarding?.health?.runtime} loading={props.onboarding?.healthLoading} />
+      ) : null}
       {props.error && section !== "tasks" ? (
         <div role="alert" className="error-banner">{props.error}</div>
       ) : null}
