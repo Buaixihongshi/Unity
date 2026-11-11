@@ -380,6 +380,9 @@
 
         <div class="panel-section-title" style="margin-top: 14px;">Sparkle 外壳事件派发模拟</div>
         <div class="btn-group">
+          <button class="control-btn" onclick="sendEvent('getState')">
+            <span>🤝 getState (页面握手索取快照)</span>
+          </button>
           <button class="control-btn" onclick="sendEvent('update-ready')">
             <span>🎉 update-ready (新版本已就绪)</span>
           </button>
@@ -514,6 +517,35 @@
 
     function mockPost(type, payload = {}) {
       log(`postMessage -> { type: "${type}", ... }`);
+      if (type === 'getState') {
+        log("外壳响应 getState 握手 -> 立即派发 state 事件快照");
+        dispatchMockStateEvent();
+      }
+    }
+
+    function dispatchMockStateEvent() {
+      const detail = {
+        type: "state",
+        appVersion: "1.0.2",
+        autoDownload: autoDownload,
+        lastCheckedAt: new Date().toISOString(),
+        canCheck: true,
+      };
+      document.dispatchEvent(new CustomEvent("unity-bridge", { detail }));
+      log(`派发事件: state (v${detail.appVersion}, autoDownload=${detail.autoDownload})`);
+    }
+
+    // 挂载 window.webkit.messageHandlers.unityBridge 模拟原生外壳注入
+    if (typeof window !== "undefined") {
+      window.webkit = window.webkit || {};
+      window.webkit.messageHandlers = window.webkit.messageHandlers || {};
+      window.webkit.messageHandlers.unityBridge = {
+        postMessage: function(command) {
+          if (command && command.type) {
+            mockPost(command.type, command);
+          }
+        }
+      };
     }
 
     function toggleEnv(mode) {
@@ -532,6 +564,10 @@
     }
 
     function sendEvent(type) {
+      if (type === 'getState') {
+        mockPost('getState');
+        return;
+      }
       const c = document.getElementById("capsule-container");
       if (type === 'update-ready') {
         dismissedVersion = null;

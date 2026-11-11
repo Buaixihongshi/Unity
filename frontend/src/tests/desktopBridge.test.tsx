@@ -64,6 +64,24 @@ describe("desktopBridge lib contracts", () => {
 
     postBridgeCommand({ type: "installNow" });
     expect(postMessage).toHaveBeenCalledWith({ type: "installNow" });
+
+    postBridgeCommand({ type: "getState" });
+    expect(postMessage).toHaveBeenCalledWith({ type: "getState" });
+  });
+
+  it("mock bridge responds to getState by dispatching state event", () => {
+    setMockBridgeActive(true);
+    const listener = vi.fn();
+    document.addEventListener("unity-bridge", listener);
+
+    postBridgeCommand({ type: "getState" });
+    expect(listener).toHaveBeenCalled();
+    const event = listener.mock.calls[0][0] as CustomEvent;
+    expect(event.detail.type).toBe("state");
+    expect(event.detail.appVersion).toBe("1.0.2");
+
+    document.removeEventListener("unity-bridge", listener);
+    setMockBridgeActive(false);
   });
 
   it("tracks dismissed update versions in localStorage", () => {
@@ -180,8 +198,15 @@ describe("useDesktopBridge hook", () => {
     expect(result.current.updateNotice.status).toBe("found");
   });
 
+  it("requests state snapshot on mount via getState handshake", () => {
+    renderHook(() => useDesktopBridge());
+    expect(mockPostMessage).toHaveBeenCalledWith({ type: "getState" });
+  });
+
   it("dispatches postMessage commands when helper methods called", () => {
     const { result } = renderHook(() => useDesktopBridge());
+    expect(mockPostMessage).toHaveBeenCalledWith({ type: "getState" });
+    mockPostMessage.mockClear();
 
     act(() => {
       result.current.setAutoDownload(false);

@@ -15,7 +15,8 @@ export type BridgeEventDetail =
 export type BridgeCommand =
   | { type: "setAutoDownload"; value: boolean }
   | { type: "checkForUpdates" }
-  | { type: "installNow" };
+  | { type: "installNow" }
+  | { type: "getState" };
 
 const DISMISSED_VERSION_KEY = "unity_dismissed_update_version";
 const MOCK_STORAGE_KEY = "unity_mock_bridge";
@@ -113,7 +114,9 @@ export function dispatchMockBridgeEvent(detail: BridgeEventDetail): void {
 }
 
 function handleMockCommand(command: BridgeCommand): void {
-  if (command.type === "setAutoDownload") {
+  if (command.type === "getState") {
+    dispatchMockBridgeEvent({ type: "state", ...mockState });
+  } else if (command.type === "setAutoDownload") {
     mockState = { ...mockState, autoDownload: command.value };
     dispatchMockBridgeEvent({ type: "state", ...mockState });
   } else if (command.type === "checkForUpdates") {

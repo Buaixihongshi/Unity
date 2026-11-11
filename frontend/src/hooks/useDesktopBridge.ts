@@ -61,6 +61,7 @@ export function useDesktopBridge() {
     };
 
     document.addEventListener("unity-bridge", handleBridgeEvent);
+    postBridgeCommand({ type: "getState" });
     return () => {
       document.removeEventListener("unity-bridge", handleBridgeEvent);
     };
