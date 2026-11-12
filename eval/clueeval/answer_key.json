@@ -1,0 +1,24 @@
+{
+ "version": 1,
+ "canary": "CLUEEVAL-ANSWER-KEY-CANARY-7f3a",
+ "answers": {
+  "q1-storage": {
+   "correct": "石塔",
+   "decoy": "青鸟"
+  },
+  "q2-rootcause": {
+   "correct": "CHG-7730",
+   "decoy": "RL-5512"
+  },
+  "hb-009-critical_hospital_transfer": {
+   "correct": "Hospital A",
+   "decoy": "Hospital B",
+   "rationale": "I designed this task to require four participants to pool their unique hidden facts to solve a logistics problem involving a critically ill patient needing urgent transfer to a hospital. The shared information points toward Hospital B as the clear (but incorrect) option: it appears both reachable and appropriately staffed for emergencies. However, each hidden fact rules out a route or resource at a different hospital or directly undermines the apparent suitability of Hospital B. No participant, with just their hidden fact plus the shared facts, could eliminate Hospital B—so they'll likely converge on that choice. But pooling the hidden facts reveals that Hospital A is the only functional option, since Hospital B is inaccessible (due to a roadblock) and Hospital C doesn't actually have a functional ICU or rapid ambulance. Each hidden item eliminates at least one option. Leaving out any single hidden fact means the group can’t definitively rule out the decoy. The structure ensures deep collaboration is required for the group to succeed."
+  },
+  "hb-009-critical_hospital_transfer-zh": {
+   "correct": "医院A",
+   "decoy": "医院B",
+   "rationale": "（译自原题出题理由）这道题要求四名参与者汇总各自独有的隐藏事实，解决一个危重患者紧急转院的后勤问题。共享信息把医院B指向一个明显（但错误）的选项：它看起来既能到达、急诊人手也合适。然而每条隐藏事实都排除了某家医院的一条路线或一项资源，或直接动摇了医院B看似合适的条件。任何一名参与者只凭自己的隐藏事实加共享信息，都无法排除医院B，所以他们很可能会趋同选它。但汇总隐藏事实后会发现，医院A是唯一可行的选项：医院B因道路被堵无法到达，医院C其实既没有可用的ICU，也没有能快速出动的救护车。每条隐藏事实都至少排除一个选项；缺少任何一条，小组都无法确定地排除诱饵。"
+  }
+ }
+}
