@@ -31,9 +31,10 @@ def build_router(settings: Settings, repository: Repository) -> APIRouter:
                 detail="Unity is not ready: fake provider is missing",
             )
 
-        from backend.app.runtime_control import activity
+        from backend.app.runtime_control import activity, idle_seconds
         runtime = runtime_view(started)
         runtime["activity"] = activity(repository)
+        runtime["idle_seconds"] = idle_seconds(request.app)
         runtime["draining"] = request.app.state.draining or request.app.state.drain_pending
         body = {
             "status": "ok",

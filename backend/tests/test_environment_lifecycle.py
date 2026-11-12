@@ -434,3 +434,120 @@ def test_detached_supervisor_does_not_inherit_the_launching_terminal_stdin(tmp_p
     monkeypatch.setattr(supervisor, "setup", lambda *a: "python")
     supervisor.start(tmp_path, "development", detach=True, state=tmp_path / "state")
     assert [call["stdin"] for call in calls] == [subprocess.DEVNULL]
+
+
+def _health(idle_seconds=None, activity=None):
+    runtime = {"started": {"instance_id": "owned", "checkout": "/checkout", "pid": 1, "git_sha": "abcdef1", "source_digest": "d"},
+               "activity": activity or {}}
+    if idle_seconds is not None: runtime["idle_seconds"] = idle_seconds
+    return {"runtime": runtime}
+
+
+@pytest.mark.parametrize("health, expected", [
+    (_health(), None),  # backend predates idle tracking: never guessed
+    (_health(7200, {"active_missions": 1}), False),
+    (_health(7199), False),
+    (_health(7200), True),
+])
+def test_idle_detection_requires_quiet_time_and_no_work(monkeypatch, health, expected):
+    monkeypatch.setattr(supervisor, "request", lambda *a, **k: health)
+    assert supervisor.idle_for(8100, 120) is expected
+
+
+def test_idle_stop_defaults_only_for_development():
+    assert supervisor.idle_limit("development") == common.profiles()["development"]["idle_stop_minutes"] > 0
+    assert supervisor.idle_limit("alpha") is None
+    assert supervisor.idle_limit("development", 0) is None
+    assert supervisor.idle_limit("alpha", 30) == 30
+
+
+def _idle_supervisor(tmp_path, monkeypatch, drain):
+    import signal
+    import uuid
+    calls = []
+
+    class Child:
+        pid = 4242
+        def poll(self): return None
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda args, **k: calls.append(args) or Child())
+    monkeypatch.setattr(supervisor.uuid, "uuid4", lambda: SimpleNamespace(hex="owned"))
+    monkeypatch.setattr(supervisor, "setup", lambda *a: "python")
+    monkeypatch.setattr(supervisor, "home", lambda *a: tmp_path)
+    monkeypatch.setattr(supervisor, "choose_ports", lambda *a, **k: (18100, None))
+    monkeypatch.setattr(supervisor, "environment", lambda *a, **k: {"YIREN_USE_FAKE_CLI": "false"})
+    monkeypatch.setattr(supervisor, "terminate", lambda _: None)
+    monkeypatch.setattr(supervisor, "process_start", lambda _: "birth")
+    monkeypatch.setattr(supervisor, "IDLE_CHECK_SECONDS", 0)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _: None)
+    drains = []
+
+    def request(port, path="/api/health", *, token=None, timeout=2):
+        if path == "/api/runtime/drain":
+            assert token
+            drains.append(port)
+            return drain(len(drains))
+        return _health(idle_seconds=3 * 3600)
+    monkeypatch.setattr(supervisor, "request", request)
+    state = tmp_path / "state"
+    supervisor.supervise(tmp_path, "development", state=state, install=False, backend_only=True, reload=True)
+    return json.loads((state / "runtime/instance.json").read_text()), drains, calls
+
+
+def test_idle_supervisor_drains_then_stops_itself(tmp_path, monkeypatch):
+    record, drains, calls = _idle_supervisor(tmp_path, monkeypatch, lambda n: {"draining": True})
+    assert record["status"] == "stopped" and record["stopped_reason"] == "idle"
+    assert record["idle_stop_minutes"] == common.profiles()["development"]["idle_stop_minutes"]
+    assert drains == [18100]
+    # Packaging output (a whole bundled Python) must not trigger reload storms.
+    excluded = [calls[0][i + 1] for i, arg in enumerate(calls[0]) if arg == "--reload-exclude"]
+    assert str((tmp_path / "output").resolve()) in excluded
+
+
+def test_idle_stop_yields_to_work_that_appears_before_drain(tmp_path, monkeypatch):
+    import signal
+    import urllib.error
+
+    def drain(n):
+        if n == 1:
+            # Work arrived after the idle check: drain refuses and the service keeps running.
+            os.kill(os.getpid(), signal.SIGTERM)  # later, an explicit stop request arrives
+            raise urllib.error.HTTPError("http://x", 409, "busy", {}, None)
+        return {"draining": True}
+    record, drains, _ = _idle_supervisor(tmp_path, monkeypatch, drain)
+    assert len(drains) == 2 and record["status"] == "stopped"
+    assert "stopped_reason" not in record
+
+
+def _register(tmp_path, monkeypatch, count, profile="development"):
+    index = tmp_path / ".instances"
+    index.mkdir(exist_ok=True)
+    for n in range(count):
+        record = tmp_path / f"{profile}-instance-{n}.json"
+        record.write_text(json.dumps({"environment": profile, "checkout": f"/features/task-{n}", "status": "running",
+                                      "supervisor_pid": n + 1, "supervisor_started_at": "birth", "real_cli": n != 0}))
+        (index / f"{profile}-{n}.json").write_text(json.dumps({"record": str(record)}))
+    monkeypatch.setattr(supervisor, "home", lambda *a: tmp_path)
+    monkeypatch.setattr(supervisor, "process_start", lambda _: "birth")
+
+
+def test_development_launches_are_capped_and_name_what_to_stop(tmp_path, monkeypatch):
+    limit = common.profiles()["development"]["max_running"]
+    monkeypatch.delenv("AGENTCLUB_MAX_RUNNING", raising=False)
+    _register(tmp_path, monkeypatch, limit - 1)
+    _register(tmp_path, monkeypatch, 3, profile="alpha")  # other profiles do not count
+    cli.guard_running("development")
+    _register(tmp_path, monkeypatch, limit)
+    with pytest.raises(common.EnvironmentError, match="already running") as error:
+        cli.guard_running("development")
+    assert "./scripts/env.sh stop development --checkout /features/task-0 --demo" in str(error.value)
+    assert "./scripts/env.sh stop development --checkout /features/task-1  #" in str(error.value)
+    monkeypatch.setenv("AGENTCLUB_MAX_RUNNING", str(limit + 1))
+    cli.guard_running("development")
+
+
+def test_dead_or_unreadable_registry_entries_are_not_counted(tmp_path, monkeypatch):
+    _register(tmp_path, monkeypatch, 2)
+    (tmp_path / ".instances/broken.json").write_text("{")
+    (tmp_path / ".instances/missing.json").write_text(json.dumps({"record": str(tmp_path / "gone.json")}))
+    monkeypatch.setattr(supervisor, "process_start", lambda pid: "birth" if pid == 1 else "reused")
+    assert [r["checkout"] for r in supervisor.running_instances("development")] == ["/features/task-0"]

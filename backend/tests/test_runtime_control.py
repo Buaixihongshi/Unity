@@ -117,3 +117,24 @@ def test_blocked_v2_discussion_requires_ended_state_before_drain(temp_settings, 
                                    protocol="deliberation_v2", participant_ids=["chulan", "wangye"], max_turns=7)))
     repo.add_event("discussion", "discussion.v2.state", {"phase": phase})
     assert client.post("/api/runtime/drain", headers={"X-AgentClub-Control": "test-private-control"}).status_code == expected
+
+
+def test_health_reports_idle_time_that_tooling_probes_do_not_reset(temp_settings, monkeypatch):
+    from backend.app import runtime_control
+    clock = [1000.0]
+    monkeypatch.setattr(runtime_control.time, "time", lambda: clock[0])
+    client, app = client_for(temp_settings, monkeypatch)
+    probe = {"X-AgentClub-Probe": "1"}
+    clock[0] += 600
+    assert client.get("/api/health", headers=probe).json()["runtime"]["idle_seconds"] == 600
+    # Supervisor/status polls and lifecycle control are bookkeeping, not use.
+    clock[0] += 60
+    client.post("/api/runtime/resume", headers={"X-AgentClub-Control": "wrong"})
+    assert client.get("/api/health", headers=probe).json()["runtime"]["idle_seconds"] == 660
+    # A visible page refreshes health without the probe header; that is use.
+    client.get("/api/health")
+    assert client.get("/api/health", headers=probe).json()["runtime"]["idle_seconds"] == 0
+    clock[0] += 30
+    client.get("/api/conversations")
+    clock[0] += 5
+    assert client.get("/api/health", headers=probe).json()["runtime"]["idle_seconds"] == 5

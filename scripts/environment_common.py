@@ -150,7 +150,8 @@ def choose_ports(profile, backend=None, frontend=None, *, allocate=False, backen
 def request(port, path="/api/health", *, token=None, timeout=2):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs): return None
-    headers = {"X-AgentClub-Control": token} if token else {}
+    # Tooling polls must not keep an otherwise unused environment alive (runtime_control.PROBE_HEADER).
+    headers = {"X-AgentClub-Probe": "1", **({"X-AgentClub-Control": token} if token else {})}
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
                                  data=b"" if token else None, headers=headers)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
