@@ -23,6 +23,13 @@ for tool in uv npm swiftc hdiutil codesign; do
   command -v "$tool" >/dev/null || { echo "ERROR: missing $tool" >&2; exit 2; }
 done
 
+# Hermetic bytecode env (#60): interpreter-auto-written .pyc embed absolute
+# build paths, and compileall then skips them as fresh (mtime match), leaking
+# build-machine paths into the bundle. An inherited PYTHONPYCACHEPREFIX would
+# instead redirect even compileall's output out of the bundle entirely.
+export PYTHONDONTWRITEBYTECODE=1
+unset PYTHONPYCACHEPREFIX
+
 SHA="$(git -C "$ROOT" rev-parse HEAD)"
 VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$ROOT/frontend/package.json")"
 BUILD="$(git -C "$ROOT" rev-list --count HEAD)"
@@ -93,7 +100,7 @@ find "$RES/python" "$RES/app" -name '__pycache__' -type d -prune -exec rm -rf {}
   "$RES/python/lib" "$RES/app" >/dev/null || echo "WARNING: some modules did not compile (see compileall)." >&2
 # The backend imports these lazily, so a missing one would only surface in a
 # user's Workflow; import each with the bundled interpreter from a neutral cwd.
-(cd "$BUILD_DIR" && PYTHONDONTWRITEBYTECODE=1 "$PY" -c '
+(cd "$BUILD_DIR" && "$PY" -c '
 import importlib, pathlib, sys
 for module in sorted(pathlib.Path(sys.argv[1]).glob("environment_*.py")):
     importlib.import_module("scripts." + module.stem)
