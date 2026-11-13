@@ -56,6 +56,22 @@ Python 3.12、Node 22（仓库提供 .python-version/.nvmrc）；拒绝旧于 Py
 不按端口 kill 陌生进程，不用 stale PID 文件杀进程，不提供绕过活跃任务的 force 停止。
 端口冲突直接报错，只有 `dev` 的默认端口会自动分配；显式端口不会被偷偷改写。
 
+### 空闲回收与并行上限
+
+每个 development 环境都是一套完整后端（多数还带 Vite），由 Agent 用 `--detach` 启动后不会随回合结束。
+为避免环境在宿主上越积越多，development 默认按 `config/environments.json` 回收与限流：
+
+- `idle_stop_minutes`（默认 120）：后端连续这么久没有用户请求、且没有未完成工作时，supervisor 走与
+  `stop` 相同的私有令牌 drain 后自行停止，记录 `stopped_reason: "idle"`。drain 返回 409（期间出现新工作）
+  时继续运行，稍后再判断。页面可见时每 30 秒的健康刷新算作使用；supervisor 与 `status` 的探测请求带
+  `X-AgentClub-Probe`，不算使用。`--idle-stop MINUTES` 可改单个实例，`--idle-stop 0` 关闭；alpha/test 默认不回收。
+  后端早于此功能的 `--ref` 候选不报告空闲时间，supervisor 会在日志中说明并保持运行。
+- `max_running`（默认 4）：已有这么多受管 development 实例存活时，新的 `dev`/`start development`
+  直接报错并列出可执行的 `stop` 命令，不自动停止任何实例；确需更多时显式设置 `AGENTCLUB_MAX_RUNNING`。
+
+用完的环境仍应主动 `./scripts/env.sh stop development --checkout <path>`；空闲回收只是兜底。
+开启 reload 时，后端还会排除 checkout 下的 `output/`（打包产物含完整 Python），避免打包触发反复重载。
+
 alpha sync 只更新干净且未运行的受管 alpha；未提交修改、陌生目录和正在监听的服务均
 阻止同步。alpha start 在停止状态下先同步主线；已运行时只复用，不自动更新或重启。
 alpha 不开启 reload。功能开发开启后端 reload，前端代理地址随实际后端端口统一下发。
