@@ -3053,6 +3053,16 @@ summary:focus-visible {
   min-width: 0;
 }
 
+.mission-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 18px;
+}
+.mission-header-actions .settings-button {
+  margin: 0;
+}
+
 .settings-button {
   align-self: center;
   display: grid;
