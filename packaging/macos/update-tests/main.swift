@@ -47,12 +47,11 @@ func runAcceptance() {
     until("packaged backend and React mounted") { (js("document.querySelector('#root')?.children.length > 0") as? Bool) == true }
     until("production bridge received state") { (js("typeof window.webkit.messageHandlers.unityBridge.postMessage") as? String) == "function" }
     print("BACKEND_PORT \(delegate.port)")
-    until("Sparkle can check") { delegate.desktopUpdater.canCheck }
     if mode == "auto" {
         // Exercise the actual background check with the production download default.
-        delegate.desktopUpdater.updater?.checkForUpdatesInBackground()
         until("background update ready", timeout: 180) { delegate.desktopUpdater.notice?["type"] as? String == "update-ready" }
     } else {
+        until("Sparkle can check") { delegate.desktopUpdater.canCheck }
         _ = js("window.webkit.messageHandlers.unityBridge.postMessage({type:'setAutoDownload',value:false})")
         command("checkForUpdates")
         until("automatic downloads off finds update") { delegate.desktopUpdater.notice?["type"] as? String == "update-found" }
