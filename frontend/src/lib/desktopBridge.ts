@@ -3,13 +3,17 @@ export interface BridgeState {
   autoDownload: boolean;
   lastCheckedAt: string | null;
   canCheck: boolean;
+  checking?: boolean;
+  updateError?: string | null;
+  updateStatus?: string;
 }
 
 export type BridgeEventDetail =
   | ({ type: "state" } & BridgeState)
-  | { type: "update-found"; version: string }
+  | { type: "update-found"; version: string; build?: string }
   | { type: "download-progress"; percent: number }
-  | { type: "update-ready"; version: string; willInstallOnQuit: boolean }
+  | { type: "update-ready"; version: string; build?: string; willInstallOnQuit: boolean }
+  | { type: "update-error"; message: string }
   | { type: "up-to-date"; checkedAt: string };
 
 export type BridgeCommand =
