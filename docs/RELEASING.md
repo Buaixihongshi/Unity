@@ -103,3 +103,42 @@ transition.json 在暂停接入前即记录意图，随后记录快照、旧版�
 
 current/transition/history 的记录是操作证据，不是所有者授权。临时 fixture 测试不写真实
 GitHub 批准，不使用日常端口或生产数据。备份与历史保留不自动清理；清理需要单独核对。旧候选 manifest 的批准字段可继续用于回滚记录，不会被改写为新格式或补造批准。
+
+## 5. macOS 桌面更新
+
+外壳嵌入固定版本、校验 SHA-256 的 Sparkle。更新源默认是主线
+`packaging/macos/appcast.xml`；每天后台检查，默认静默下载，退出时安装。
+“立即重启”先检查活动状态，再使用后端 drain 拒绝新写请求；忙碌或状态未知时拒绝。
+手动退出与切换仓库在无法确认活动状态时仍要求用户确认。
+
+正式签名密钥由所有者在本机生成、保存并备份，不提交仓库、不交给 CI。使用下载的
+Sparkle 发行包内 `bin/generate_keys`，按工具提示生成密钥；只把公钥传入构建。
+默认本地构建缺少公钥时明确禁用更新，不能当作已启用自动更新的发布版本。
+
+```sh
+SPARKLE_PUBLIC_KEY='<base64 公钥>' REQUIRE_UPDATES=1 ./scripts/package-macos.sh
+```
+
+对最终 DMG 使用同一发行包内 `bin/sign_update`，按其 `--help` 说明从所有者钥匙串签名。
+把 DMG 上传到 GitHub Release 后，将工具输出的 `sparkle:edSignature` 和 `length`
+连同 HTTPS 下载 URL 写入 appcast enclosure。`sparkle:version` 必须与包中
+`CFBundleVersion` 相同，且比已发布版本递增；短版本号用于展示。私钥绝不写入 appcast。
+包开启 `SUVerifyUpdateBeforeExtraction`，先验签再解包。签名失败保留现有应用。
+丢失密钥后的恢复或轮换必须按 [Sparkle 官方安全说明](https://sparkle-project.org/documentation/security/)
+单独制定，不能临时换公钥并宣称旧客户端仍可安全更新。
+
+开发期验收使用以下入口，证据留在私有临时目录：
+
+```sh
+bash packaging/macos/bridge-tests/run.sh
+bash packaging/macos/update-tests/run.sh
+```
+
+后者构建完整 arm64/本机架构包，以独立 bundle ID、一次性 Ed25519 密钥、回环 feed、
+隔离 support 目录验证后台下载与退出安装、手动下载与重启、坏签名拒绝。
+自动和手动场景各在包内后端执行真实 CLI 发言，继承日常 CLI 的角色路由、模型与参数；
+不复制日常数据库、聊天或凭据。缺少真实认证/额度时必须报告失败，不能改用演示。
+默认选择 baobao，专项验证可用 `ACCEPTANCE_AGENT` 选择其他已有角色，不改写其路由。
+`OPENSSL` 可指定支持 Ed25519 的 OpenSSL 3 可执行文件；默认尝试 Homebrew 版本。
+测试重启后的程序只记录版本标记并退出，避免环境变量未继承时启动日常数据目录。
+这项验收不代替 Developer ID、公证、正式 feed 与另一台 Mac 的分发验收，也不授权发布。

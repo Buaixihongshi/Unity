@@ -466,6 +466,50 @@ rejectedScenario("T10 other-port origin", tag: "other") {
     "window.postToBridge({type:'setAutoDownload', value:true})"
 }
 
+// MARK: Sparkle bridge snapshot, restart guard and malformed health (#175)
+
+let health = { (activity: String) -> Data in
+    Data("{\"runtime\":{\"activity\":\(activity)}}".utf8)
+}
+let idleHealth = health("{\"active_missions\":0,\"active_maintenance\":0,\"active_grants\":0}")
+expect("S1 valid health proves idle", AppDelegate.activeWork(idleHealth, status: 200) == 0)
+expect("S2 non-200 cannot prove idle", AppDelegate.activeWork(idleHealth, status: 503) == nil)
+for (name, value) in [("empty", "{}"), ("missing", "{\"active_missions\":0}"),
+                      ("negative", "{\"active_missions\":-1,\"active_maintenance\":0,\"active_grants\":0}"),
+                      ("boolean", "{\"active_missions\":false,\"active_maintenance\":0,\"active_grants\":0}"),
+                      ("fraction", "{\"active_missions\":0.5,\"active_maintenance\":0,\"active_grants\":0}")] {
+    expect("S3 \(name) health rejected", AppDelegate.activeWork(health(value), status: 200) == nil)
+}
+expect("S4 active grants count as busy", AppDelegate.activeWork(health("{\"active_missions\":0,\"active_maintenance\":0,\"active_grants\":1}"), status: 200) == 1)
+
+webView.navigationDelegate = delegate
+loadAndWait(entryURL("/"), tag: "entry")
+var installs = 0
+delegate.desktopUpdater.requestRestart = { delegate.requestUpdateRestart($0) }
+delegate.desktopUpdater.showReady(toInstallAndRelaunch: { choice in if choice == .install { installs += 1 } })
+// The bridge must replay the pending ready state after a fresh document loads.
+let readyNonce = js(webView, "window.__docNonce") as? String
+webView.reload()
+expect("S5 ready reload commits new document", pumpUntil(10) {
+    (js(webView, "window.__docNonce") as? String) != readyNonce
+})
+_ = js(webView, "window.readySeen=false; document.addEventListener('unity-bridge',e=>{if(e.detail.type==='update-ready')window.readySeen=true}); window.postToBridge({type:'getState'})")
+expect("S6 getState replays ready update", pumpUntil(4) { (js(webView, "window.readySeen") as? Bool) == true })
+for active: Int? in [2, nil] {
+    delegate.activityReader = { $0(active) }
+    _ = js(webView, "window.postToBridge({type:'installNow'})")
+    pump(0.3)
+    expect("S7 \(String(describing: active)) blocks update restart", installs == 0)
+}
+delegate.activityReader = { $0(0) }
+delegate.updateDrainer = { $0(false) }
+_ = js(webView, "window.postToBridge({type:'installNow'})")
+pump(0.3)
+expect("S8 concurrent task/drain rejection blocks restart", installs == 0)
+delegate.updateDrainer = { $0(true) }
+_ = js(webView, "window.postToBridge({type:'installNow'})")
+expect("S8 idle allows explicit update restart", pumpUntil(3) { installs == 1 })
+
 // MARK: Summary
 
 defaults.removePersistentDomain(forName: suiteName)

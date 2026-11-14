@@ -26,11 +26,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// Injectable preferences storage; the app always runs with .standard.
     var defaults: UserDefaults = .standard
     private var quitting = false
+    private var updateRestartRequested = false
+    /// Native regression injects health outcomes without launching a backend.
+    var activityReader: ((@escaping (Int?) -> Void) -> Void)?
+    var updateDrainer: ((@escaping (Bool) -> Void) -> Void)?
+    private var lifecycleToken = ""
+    private var updateRestartPending = false
+    let desktopUpdater = DesktopUpdater()
     private var projectItem: NSMenuItem!
 
     private var resources: URL { Bundle.main.resourceURL! }
     private var logURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Unity/backend.log")
+        if let support = ProcessInfo.processInfo.environment["UNITY_SUPPORT_DIR"] {
+            return URL(fileURLWithPath: support).appendingPathComponent("logs/backend.log")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Unity/backend.log")
     }
 
     /// The Git repository Workflow tasks branch from; nil keeps the backend in its private workspace.
@@ -69,6 +79,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         window.makeKeyAndOrderFront(nil)
         showStatus("正在启动 Unity…")
         startBackend()
+        desktopUpdater.changed = { [weak self] in self?.pushBridgeState() }
+        desktopUpdater.emit = { [weak self] in self?.pushBridgeEvent($0) }
+        desktopUpdater.requestRestart = { [weak self] in self?.requestUpdateRestart($0) }
+        desktopUpdater.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -107,10 +121,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         process.currentDirectoryURL = resources.appendingPathComponent("app")
         var env = ProcessInfo.processInfo.environment
         // Never write bytecode into the signed bundle (the launcher sets this again for children).
-        env["PYTHONPYCACHEPREFIX"] = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/Unity/pycache").path
+        env["PYTHONPYCACHEPREFIX"] = ProcessInfo.processInfo.environment["UNITY_SUPPORT_DIR"]
+            .map { URL(fileURLWithPath: $0).appendingPathComponent("cache/pycache").path }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/Unity/pycache").path
         // The launcher makes this the backend's cwd, i.e. the Workflow project repository.
         if let project = projectDirectory { env["UNITY_WORKSPACE"] = project.path }
+        lifecycleToken = UUID().uuidString + UUID().uuidString
+        env["UNITY_LIFECYCLE_TOKEN"] = lifecycleToken
         process.environment = env
         process.standardOutput = log
         process.standardError = log
@@ -151,17 +168,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// Sums the activity counters in /api/health; nil when they cannot be read.
     private func fetchActiveWork(_ completion: @escaping (Int?) -> Void) {
+        if let activityReader { activityReader(completion); return }
         var request = URLRequest(url: origin.appendingPathComponent("api/health"))
         request.timeoutInterval = 3
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            var total: Int?
-            if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let runtime = json["runtime"] as? [String: Any],
-               let activity = runtime["activity"] as? [String: Any] {
-                total = activity.values.compactMap { ($0 as? NSNumber)?.intValue }.reduce(0, +)
-            }
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let total = Self.activeWork(data, status: (response as? HTTPURLResponse)?.statusCode)
             DispatchQueue.main.async { completion(total) }
         }.resume()
+    }
+
+    /// Missing/invalid evidence cannot prove idle (#175).
+    static func activeWork(_ data: Data?, status: Int?) -> Int? {
+        guard status == 200, let data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let runtime = json["runtime"] as? [String: Any],
+              let activity = runtime["activity"] as? [String: Any] else { return nil }
+        let required = ["active_missions", "active_maintenance", "active_grants"]
+        guard required.allSatisfy({ activity[$0] != nil }) else { return nil }
+        var total = 0
+        for value in activity.values {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue >= 0, number.doubleValue < Double(Int.max),
+                  number.doubleValue.rounded() == number.doubleValue else { return nil }
+            let (sum, overflow) = total.addingReportingOverflow(number.intValue)
+            guard !overflow else { return nil }
+            total = sum
+        }
+        return total
+    }
+
+    private func control(_ action: String, completion: @escaping (Bool) -> Void) {
+        var request = URLRequest(url: origin.appendingPathComponent("api/runtime/" + action))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue(lifecycleToken, forHTTPHeaderField: "X-AgentClub-Control")
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200 && json?["draining"] as? Bool == (action == "drain")
+            DispatchQueue.main.async { completion(ok) }
+        }.resume()
+    }
+
+    func requestUpdateRestart(_ install: @escaping () -> Void) {
+        guard !updateRestartPending else { return }
+        updateRestartPending = true
+        fetchActiveWork { [weak self] active in
+            guard let self else { return }
+            guard active == 0 else {
+                self.updateRestartPending = false
+                self.desktopUpdater.fail(active == nil ? "无法确认任务状态，请稍后再重启" : "还有任务未结束，稍后再重启更新")
+                return
+            }
+            let drained: (Bool) -> Void = { [weak self] ok in
+                guard let self else { return }
+                self.updateRestartPending = false
+                guard ok else {
+                    self.desktopUpdater.fail("仍有任务或请求未结束，稍后再重启更新")
+                    return
+                }
+                // The backend now rejects new writes; health-to-quit cannot
+                // race a newly admitted task. Reuse the existing drain protocol.
+                self.updateRestartRequested = true
+                install()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+                    guard let self, self.updateRestartRequested, !self.quitting else { return }
+                    self.updateRestartRequested = false
+                    self.control("resume") { _ in }
+                    self.desktopUpdater.fail("更新未能退出应用，请稍后重试")
+                }
+            }
+            if let drainer = self.updateDrainer { drainer(drained) }
+            else { self.control("drain", completion: drained) }
+        }
     }
 
     // Asynchronous so the confirmation works for menu, Dock and Apple Event quits alike.
@@ -169,9 +248,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard !quitting, let backend, backend.isRunning else { return .terminateNow }
         fetchActiveWork { [weak self] active in
             guard let self else { return }
-            guard let active, active > 0 else { return self.stopBackendThenQuit() }
+            if self.updateRestartRequested && active != 0 {
+                self.updateRestartRequested = false
+                self.control("resume") { _ in }
+                self.desktopUpdater.fail(active == nil ? "无法确认任务状态，请稍后再重启" : "还有任务未结束，稍后再重启更新")
+                NSApp.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            guard active != 0 else { return self.stopBackendThenQuit() }
             let alert = NSAlert()
-            alert.messageText = "还有 \(active) 项任务未结束"
+            alert.messageText = active.map { "还有 \($0) 项任务未结束" } ?? "无法确认任务是否结束"
             alert.informativeText = "包括正在运行或等待你回复的讨论。退出会中断正在进行的模型调用。"
             alert.addButton(withTitle: "取消")
             alert.addButton(withTitle: "仍然退出")
@@ -270,9 +356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         fetchActiveWork { [weak self] active in
             guard let self else { return }
-            guard let active, active > 0 else { return apply() }
+            guard active != 0 else { return apply() }
             let alert = NSAlert()
-            alert.messageText = "还有 \(active) 项任务未结束"
+            alert.messageText = active.map { "还有 \($0) 项任务未结束" } ?? "无法确认任务是否结束"
             alert.informativeText = "切换仓库会重启后端，中断正在进行的模型调用。"
             alert.addButton(withTitle: "取消")
             alert.addButton(withTitle: "仍然切换")
@@ -479,6 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case "setAutoDownload":
             guard let value = body["value"] as? Bool else { return }
             defaults.set(value, forKey: Self.autoDownloadKey)
+            desktopUpdater.setAutoDownload(value)
             pushBridgeState()
         case "getState":
             // Handshake for #169: the page attaches its listener first and
@@ -486,12 +573,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             // — or a reload, or a second consumer — always gets the state.
             pushBridgeState()
         case "checkForUpdates":
-            // No updater is wired into this build yet. Stay silent instead of
-            // faking a check; Sparkle takes over this command when it lands.
-            break
+            desktopUpdater.check()
         case "installNow":
-            // Becomes "restart and install" once the Sparkle driver is wired in.
-            break
+            desktopUpdater.installNow()
         default:
             break
         }
@@ -515,14 +599,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             "appVersion": appVersion,
             "autoDownload": autoDownload,
             "lastCheckedAt": lastChecked.map { Self.iso8601.string(from: $0) } ?? NSNull(),
-            // The update driver is not wired in yet; a disabled check button
-            // tells the truth about this build rather than a check that never runs.
-            "canCheck": false,
+            "canCheck": desktopUpdater.canCheck,
+            "checking": desktopUpdater.checking,
+            "updateStatus": desktopUpdater.notice?["type"] as? String ?? "idle",
+            "updateError": desktopUpdater.errorMessage ?? NSNull(),
         ])
+        if let notice = desktopUpdater.notice { pushBridgeEvent(notice) }
     }
 
     private func pushBridgeEvent(_ detail: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: detail),
+        guard webView != nil, let data = try? JSONSerialization.data(withJSONObject: detail),
               let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript(
             "document.dispatchEvent(new CustomEvent('unity-bridge',{detail:\(json)}))",

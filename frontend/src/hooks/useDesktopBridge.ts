@@ -13,6 +13,7 @@ import {
 export interface UpdateNotice {
   status: "idle" | "found" | "ready";
   version?: string;
+  build?: string;
   willInstallOnQuit?: boolean;
   percent?: number;
 }
@@ -37,13 +38,19 @@ export function useDesktopBridge() {
           autoDownload: detail.autoDownload,
           lastCheckedAt: detail.lastCheckedAt,
           canCheck: detail.canCheck,
+          checking: detail.checking,
+          updateError: detail.updateError,
+          updateStatus: detail.updateStatus,
         });
+        if (detail.checking !== undefined) setIsChecking(detail.checking);
+        if (detail.updateStatus === "idle") setUpdateNotice({ status: "idle" });
       } else if (detail.type === "update-found") {
         setIsChecking(false);
         setUpdateNotice((prev) => ({
           ...prev,
           status: "found",
           version: detail.version,
+          build: detail.build,
         }));
       } else if (detail.type === "download-progress") {
         setUpdateNotice((prev) => ({
@@ -55,8 +62,12 @@ export function useDesktopBridge() {
         setUpdateNotice({
           status: "ready",
           version: detail.version,
+          build: detail.build,
           willInstallOnQuit: detail.willInstallOnQuit,
         });
+      } else if (detail.type === "update-error") {
+        setIsChecking(false);
+        setState((prev) => prev ? { ...prev, updateError: detail.message } : prev);
       } else if (detail.type === "up-to-date") {
         setIsChecking(false);
         setState((prev) => (prev ? { ...prev, lastCheckedAt: detail.checkedAt, canCheck: true } : prev));
@@ -78,9 +89,10 @@ export function useDesktopBridge() {
   }, [state]);
 
   const isDismissed = useMemo(() => {
-    if (!updateNotice.version) return false;
-    return dismissedVersion === updateNotice.version;
-  }, [updateNotice.version, dismissedVersion]);
+    const updateID = updateNotice.build ?? updateNotice.version;
+    if (!updateID) return false;
+    return dismissedVersion === updateID;
+  }, [updateNotice.version, updateNotice.build, dismissedVersion]);
 
   // Notice should show only if:
   // 1) update-ready (ready to install on quit / restart now)
@@ -94,11 +106,12 @@ export function useDesktopBridge() {
   }, [isDesktop, isDismissed, updateNotice.status, state?.autoDownload]);
 
   const dismissCurrentUpdate = useCallback(() => {
-    if (updateNotice.version) {
-      setDismissedVersion(updateNotice.version);
-      setLocalDismissedVersion(updateNotice.version);
+    const updateID = updateNotice.build ?? updateNotice.version;
+    if (updateID) {
+      setDismissedVersion(updateID);
+      setLocalDismissedVersion(updateID);
     }
-  }, [updateNotice.version]);
+  }, [updateNotice.version, updateNotice.build]);
 
   const setAutoDownload = useCallback((value: boolean) => {
     postBridgeCommand({ type: "setAutoDownload", value });

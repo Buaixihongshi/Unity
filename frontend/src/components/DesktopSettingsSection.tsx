@@ -91,6 +91,7 @@ export function DesktopSettingsSection({
         </p>
       </div>
 
+      {bridgeState?.updateError && <p role="alert">{bridgeState.updateError}</p>}
       <div className="desktop-settings-card">
         {/* Version & Update check */}
         <div className="desktop-setting-row">

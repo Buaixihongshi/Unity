@@ -136,6 +136,34 @@ describe("useDesktopBridge hook", () => {
     expect(result.current.state?.autoDownload).toBe(true);
   });
 
+  it("ends a failed native check and retains its error in state", () => {
+    const { result } = renderHook(() => useDesktopBridge());
+    act(() => dispatchMockBridgeEvent({ type: "state", appVersion: "1", autoDownload: true, lastCheckedAt: null, canCheck: true }));
+    act(() => result.current.checkForUpdates());
+    expect(result.current.isChecking).toBe(true);
+    act(() => dispatchMockBridgeEvent({ type: "update-error", message: "签名无效" }));
+    expect(result.current.isChecking).toBe(false);
+    expect(result.current.state?.updateError).toBe("签名无效");
+  });
+
+  it("reconciles a stale capsule with the native idle snapshot after failure", () => {
+    const { result } = renderHook(() => useDesktopBridge());
+    act(() => dispatchMockBridgeEvent({ type: "update-ready", version: "2", willInstallOnQuit: true }));
+    act(() => dispatchMockBridgeEvent({ type: "state", appVersion: "1", autoDownload: true, lastCheckedAt: null, canCheck: true, checking: false, updateStatus: "idle", updateError: "下载失败" }));
+    expect(result.current.updateNotice.status).toBe("idle");
+    expect(result.current.showCapsule).toBe(false);
+  });
+
+  it("only dismisses the selected build when short versions are equal (#177)", () => {
+    const { result } = renderHook(() => useDesktopBridge());
+    act(() => dispatchMockBridgeEvent({ type: "state", appVersion: "1", autoDownload: true, lastCheckedAt: null, canCheck: true }));
+    act(() => dispatchMockBridgeEvent({ type: "update-ready", version: "1.0.0", build: "101", willInstallOnQuit: true }));
+    act(() => result.current.dismissCurrentUpdate());
+    expect(result.current.showCapsule).toBe(false);
+    act(() => dispatchMockBridgeEvent({ type: "update-ready", version: "1.0.0", build: "102", willInstallOnQuit: true }));
+    expect(result.current.showCapsule).toBe(true);
+  });
+
   it("shows update capsule on update-ready and supports dismiss", () => {
     const { result } = renderHook(() => useDesktopBridge());
 

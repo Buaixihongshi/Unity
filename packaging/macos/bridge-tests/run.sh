@@ -12,11 +12,15 @@ ARCH="$(uname -m)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+source "$ROOT/scripts/sparkle.sh"
+trap 'rm -rf "$TMP" "$SPARKLE_ROOT"' EXIT
+link=(-F "$SPARKLE_ROOT" -framework Sparkle -Xlinker -rpath -Xlinker "$SPARKLE_ROOT")
+
 echo "== compile UnityApp.swift as the app (package parameters)"
 swiftc -O -target "${ARCH}-apple-macos12.0" -o "$TMP/Unity-app" \
-  "$ROOT/packaging/macos/UnityApp.swift" "$ROOT/packaging/macos/main.swift"
+  "${link[@]}" "$ROOT/packaging/macos/Updater.swift" "$ROOT/packaging/macos/UnityApp.swift" "$ROOT/packaging/macos/main.swift"
 
 echo "== compile + run bridge regression suite"
 swiftc -O -target "${ARCH}-apple-macos12.0" -o "$TMP/bridge-tests" \
-  "$ROOT/packaging/macos/UnityApp.swift" "$HERE/main.swift"
+  "${link[@]}" "$ROOT/packaging/macos/Updater.swift" "$ROOT/packaging/macos/UnityApp.swift" "$HERE/main.swift"
 "$TMP/bridge-tests"
