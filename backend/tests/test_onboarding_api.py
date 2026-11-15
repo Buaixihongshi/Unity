@@ -109,7 +109,7 @@ def test_health_reports_local_bootstrap_dependencies(temp_settings):
     assert response.status_code == 200
     assert {key: response.json()[key] for key in ('status', 'version', 'database', 'config', 'fake_provider')} == {
         "status": "ok",
-        "version": "1.0.0",
+        "version": "1.1.1",
         "database": "ready",
         "config": "ready",
         "fake_provider": "ready",

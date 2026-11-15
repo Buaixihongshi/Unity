@@ -116,8 +116,17 @@ Sparkle 发行包内 `bin/generate_keys`，按工具提示生成密钥；只把�
 默认本地构建缺少公钥时明确禁用更新，不能当作已启用自动更新的发布版本。
 
 ```sh
-SPARKLE_PUBLIC_KEY='<base64 公钥>' REQUIRE_UPDATES=1 ./scripts/package-macos.sh
+SPARKLE_PUBLIC_KEY="$(cat packaging/macos/sparkle-public-key.txt)" \
+REQUIRE_UPDATES=1 ./scripts/package-macos.sh
 ```
+
+正式公钥保存在 `packaging/macos/sparkle-public-key.txt`，可公开提交；私钥保存在所有者
+Mac 登录钥匙串的 `unity` account。查询公钥用 `bin/generate_keys --account unity -p`；
+签名使用 `bin/sign_update --account unity <DMG>`，复用现有密钥，不每次生成或轮换。
+
+首次从未配置公钥的旧版升级，需手动安装一次启用公钥的版本；后续发布先上传已签名
+DMG，再将对应 appcast 更新合入 main，客户端才会发现新版本。更新清单中的构建号
+须严格递增，与应用 Info.plist 一致。发布不能只上传 Release 而遗漏 appcast。
 
 对最终 DMG 使用同一发行包内 `bin/sign_update`，按其 `--help` 说明从所有者钥匙串签名。
 把 DMG 上传到 GitHub Release 后，将工具输出的 `sparkle:edSignature` 和 `length`
