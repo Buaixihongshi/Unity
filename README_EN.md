@@ -5,7 +5,7 @@
 > Turn Codex CLI, Claude Code, and Antigravity CLI into a configurable, collaborative, and observable local Agent team.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.1.0-2f6f64.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.1-2f6f64.svg)](CHANGELOG.md)
 
 [简体中文](README.md) | **English**
 
