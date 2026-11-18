@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ObservabilityOverview } from "../components/ObservabilityOverview";
 import { fetchObservabilityOverview, fetchObservabilityTurn } from "../lib/api";
 import type { ObservabilityOverviewPayload, ObservabilityTurnDetailPayload } from "../types";
@@ -13,11 +13,11 @@ const mockedFetch = vi.mocked(fetchObservabilityOverview);
 const mockedTurn = vi.mocked(fetchObservabilityTurn);
 const STAMP = "2026-10-20T10:00:00+00:00";
 
-function turnDetail(): ObservabilityTurnDetailPayload {
+function turnDetail(missionId = "m_1"): ObservabilityTurnDetailPayload {
   return {
-    mission: { id: "m_1", title: "测试任务" },
+    mission: { id: missionId, title: "测试任务" },
     turn: {
-      turn_id: "turn_1", mission_id: "m_1", mission_title: "测试任务", index: 1,
+      turn_id: missionId === "m_1" ? "turn_1" : "turn_2", mission_id: missionId, mission_title: "测试任务", index: 1,
       agent_id: "chulan", agent_name: "张楚岚", provider_id: "codex", model: "", status: "completed",
       purpose: "", started_at: STAMP, ended_at: STAMP, duration_ms: 31_000,
       reply: "做完了。", error: "", tokens: 183_600, usage: null,
@@ -78,6 +78,19 @@ function payload(): ObservabilityOverviewPayload {
       agent: "wangye", turn_id: "turn_2", mission: "失败任务", at: STAMP,
     }],
   };
+}
+
+function stubClipboard(writeText?: (text: string) => Promise<void>) {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: writeText === undefined ? undefined : { writeText },
+  });
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => { resolve = res; });
+  return { promise, resolve };
 }
 
 describe("ObservabilityOverview", () => {
@@ -168,5 +181,109 @@ describe("ObservabilityOverview", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("加载观测数据失败");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(2));
+  });
+
+  describe("mission id copy", () => {
+    afterEach(() => {
+      stubClipboard(undefined);
+    });
+
+    async function openTurnsTable() {
+      await screen.findByText(/61 个会话 \/ 150 个任务 \/ 342 个回合/);
+      fireEvent.click(screen.getByRole("button", { name: "全部回合" }));
+    }
+
+    async function openTurn(agent: string) {
+      fireEvent.click(screen.getByRole("button", { name: `查看 ${agent} 的回合细节` }));
+      await screen.findByText(/a\.py/);
+    }
+
+    it("writes the current mission id and confirms", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      stubClipboard(writeText);
+      mockedFetch.mockResolvedValue(payload());
+      mockedTurn.mockResolvedValue(turnDetail());
+      render(<ObservabilityOverview />);
+      await openTurnsTable();
+      await openTurn("chulan");
+
+      fireEvent.click(screen.getByRole("button", { name: "复制 Mission ID" }));
+      expect(writeText).toHaveBeenCalledWith("m_1");
+      expect(await screen.findByText("已复制")).toBeInTheDocument();
+    });
+
+    it("keeps the button disabled while a copy is pending", async () => {
+      const gate = deferred();
+      const writeText = vi.fn().mockReturnValue(gate.promise);
+      stubClipboard(writeText);
+      mockedFetch.mockResolvedValue(payload());
+      mockedTurn.mockResolvedValue(turnDetail());
+      render(<ObservabilityOverview />);
+      await openTurnsTable();
+      await openTurn("chulan");
+
+      const button = screen.getByRole("button", { name: "复制 Mission ID" });
+      fireEvent.click(button);
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      gate.resolve();
+      expect(await screen.findByText("已复制")).toBeInTheDocument();
+      expect(button).not.toBeDisabled();
+    });
+
+    it("falls back to the manual-copy hint when writing fails", async () => {
+      stubClipboard(vi.fn().mockRejectedValue(new Error("denied")));
+      mockedFetch.mockResolvedValue(payload());
+      mockedTurn.mockResolvedValue(turnDetail());
+      render(<ObservabilityOverview />);
+      await openTurnsTable();
+      await openTurn("chulan");
+
+      fireEvent.click(screen.getByRole("button", { name: "复制 Mission ID" }));
+      expect(await screen.findByText("复制失败，请选中 ID 手动复制。")).toBeInTheDocument();
+    });
+
+    it("falls back to the manual-copy hint when the clipboard API is missing", async () => {
+      stubClipboard(undefined);
+      mockedFetch.mockResolvedValue(payload());
+      mockedTurn.mockResolvedValue(turnDetail());
+      render(<ObservabilityOverview />);
+      await openTurnsTable();
+      await openTurn("chulan");
+
+      fireEvent.click(screen.getByRole("button", { name: "复制 Mission ID" }));
+      expect(await screen.findByText("复制失败，请选中 ID 手动复制。")).toBeInTheDocument();
+    });
+
+    it("resets the state and copies the new id after switching missions", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      stubClipboard(writeText);
+      const data = payload();
+      data.recent_turns.push({
+        turn_id: "turn_2", mission_id: "m_2", mission: "另一个任务", agent: "baobao",
+        agent_name: "冯宝宝", provider: "claude", model: "", status: "completed",
+        duration_ms: 12_000, tokens: 1000, cost: 0.01, checks: [], at: STAMP,
+      });
+      mockedFetch.mockResolvedValue(data);
+      mockedTurn.mockImplementation((id: string) => Promise.resolve(turnDetail(id === "turn_2" ? "m_2" : "m_1")));
+      render(<ObservabilityOverview />);
+
+      await openTurnsTable();
+      await openTurn("chulan");
+      fireEvent.click(screen.getByRole("button", { name: "复制 Mission ID" }));
+      expect(await screen.findByText("已复制")).toBeInTheDocument();
+      expect(writeText).toHaveBeenLastCalledWith("m_1");
+
+      fireEvent.click(screen.getByRole("button", { name: "返回" }));
+      await openTurn("baobao");
+      expect(screen.getByText("m_2")).toBeInTheDocument();
+      expect(screen.queryByText("已复制")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "复制 Mission ID" }));
+      expect(writeText).toHaveBeenLastCalledWith("m_2");
+      expect(await screen.findByText("已复制")).toBeInTheDocument();
+    });
   });
 });
