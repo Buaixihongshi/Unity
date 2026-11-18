@@ -23,6 +23,7 @@ const WINDOWS: { id: ObservabilityWindow; label: string }[] = [
 
 const CHECK_LABEL: Record<string, string> = {
   turn_closed: "回合终态",
+  a2a_wait_closed: "求助闭合",
   blocked_explained: "阻塞说明",
   usage_reported: "用量记录",
   claims_match_events: "声明一致",
@@ -30,7 +31,7 @@ const CHECK_LABEL: Record<string, string> = {
 };
 
 // Older payloads carry no layer; the check name decides.
-const TRACE_CHECKS = new Set(["turn_closed", "blocked_explained", "usage_reported"]);
+const TRACE_CHECKS = new Set(["turn_closed", "a2a_wait_closed", "blocked_explained", "usage_reported"]);
 
 const LAYERS: { id: ObservabilityLayer; label: string; hint: string }[] = [
   { id: "trace", label: "Trace 可信度", hint: "记录本身能不能信：宿主管道的问题" },

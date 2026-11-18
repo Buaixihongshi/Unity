@@ -56,6 +56,7 @@ _CLAIM_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("done", re.compile(r"已完成|已修复|修复好了|已经修复|已解决|搞定了|已处理|已经修好")),
 ]
 _PLAN = re.compile(r"建议|可以|应该|将会|下一步|如果|若|假如|一旦|需要|计划|打算|不妨|待|设想|原则是|预计")
+_WAIT_PLAN = re.compile(r"等[^，,；;。！？\n]*?(?:[，,；;]\s*)?(?:之后|(?:稍|随)?后再)")
 _DENIAL = re.compile(r"没有|没|未|无法|不能|尚未|并未")
 _CONTRAST = re.compile(r"但|不过|却|而是")
 _SENTENCE = re.compile(r"[。！？\n]+")
@@ -79,11 +80,11 @@ _TOOL_ALIASES = {
 _FILE_NAME = re.compile(r"[\w.-]+\.[A-Za-z0-9]{1,8}")
 
 
-def _sentences(reply: str) -> list[str]:
+def _sentences(reply: str, *, min_length: int = 6) -> list[str]:
     out = []
     for raw in _SENTENCE.split(reply or ""):
         text = _MARKUP.sub("", raw).strip(" -—·")
-        if len(text) >= 6:
+        if len(text) >= min_length:
             out.append(text)
     return out
 
@@ -150,6 +151,66 @@ def _result(name: str, value, note: str) -> dict:
             "value": value, "note": note}
 
 
+def _false_partner_confirmation(turn: Turn) -> Optional[str]:
+    """Match completed confirmation claims only against this continuation's failed wait."""
+    if not turn.a2a_failed_targets:
+        return None
+    from backend.app.domain.agent_registry import get_agent_registry
+    registry = get_agent_registry()
+    patterns = []
+    for target in turn.a2a_failed_targets:
+        profile = next((a for a in registry.all() if a.id == target), None)
+        names = {target}
+        if profile:
+            names.update((profile.display_name, *profile.aliases))
+        names.update({"baobao": ("宝宝", "冯宝宝"), "chulan": ("楚岚", "张楚岚")}.get(target, ()))
+        partner = "(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True) if n) + ")"
+        pattern = re.compile(
+            partner + r"(?:已经|已)(?:确认|回复|核实)|"
+            + partner + r"(?:确认|回复|核实)了|"
+            + r"(?:收到|拿到)(?:了)?" + partner + r"(?:的)?(?:确认|回复)"
+        )
+        patterns.append((target, pattern))
+
+    # Keep natural-sentence boundaries from the original text: deleting a later
+    # "等…之后" span must not erase the boundary of a new waiting structure.
+    sentences = _sentences(turn.reply, min_length=1)
+    clauses = [_sentences(re.sub(r"[，,；;]", "。", s), min_length=1) for s in sentences]
+    endpoint = re.compile(r"之后|(?:稍|随)?后再")
+    anchored = [False] * len(sentences)
+    following_anchor = False
+    for index in range(len(sentences) - 1, -1, -1):
+        anchored[index] = following_anchor or any(
+            endpoint.search(clause)
+            and not any(p.search(clause) for _, p in patterns)
+            for clause in clauses[index]
+        )
+        # The current natural sentence belongs to the previous search window
+        # only if it does not begin a new waiting structure.
+        following_anchor = anchored[index] if not sentences[index].startswith("等") else False
+
+    for target, pattern in patterns:
+        for index, raw in enumerate(sentences):
+            first = clauses[index][0] if clauses[index] else ""
+            # Preserve the existing local deletion; the new exemption applies
+            # only to an unchanged first clause, never text exposed by deletion.
+            reply = _WAIT_PLAN.sub("", raw)
+            for clause_index, sentence in enumerate(
+                _sentences(re.sub(r"[，,；;]", "。", reply), min_length=1)
+            ):
+                if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
+                    continue
+                for match in pattern.finditer(sentence):
+                    if _negated(sentence, match):
+                        continue
+                    if (clause_index == 0 and sentence == first and raw.startswith("等")
+                            and anchored[index]
+                            and not _CONTRAST.search(sentence[max(0, match.start() - 20):match.start()])):
+                        continue
+                    return target
+    return None
+
+
 def check_claims_match_events(turn: Turn) -> dict:
     """A claim about an action must not be contradicted by this turn's events.
 
@@ -159,6 +220,9 @@ def check_claims_match_events(turn: Turn) -> dict:
     errored. A claim with no event either way is `n/a`, because the CLI's own
     tools are not always traced.
     """
+    target = _false_partner_confirmation(turn)
+    if target is not None:
+        return _result("claims_match_events", FAIL, f"声称 {target} 已确认/回复，但本次求助 reply.failed")
     found = claims(turn.reply)
     if not found:
         return _result("claims_match_events", NA, "回复没有可核对的行动声明")
@@ -253,6 +317,15 @@ def check_blocked_explained(turn: Turn) -> dict:
 _ENDED_MISSION = {"blocked", "completed", "failed", "completed_with_warnings"}
 
 
+def check_a2a_wait_closed(turn: Turn) -> dict:
+    if not turn.a2a_waits:
+        return _result("a2a_wait_closed", NA, "本回合没有 wait_reply 求助")
+    failures = [note for value, note in turn.a2a_waits if value == FAIL]
+    pending = [note for value, note in turn.a2a_waits if value is None]
+    return _result("a2a_wait_closed", FAIL if failures else NA if pending else PASS,
+                   "；".join(failures or pending or [note for _, note in turn.a2a_waits]))
+
+
 def check_turn_closed(turn: Turn) -> dict:
     """A turn whose mission has ended must have ended too.
 
@@ -292,6 +365,7 @@ TRACE, AGENT = "trace", "agent"
 
 CHECKS: dict[str, Callable[[Turn], dict]] = {
     "turn_closed": check_turn_closed,
+    "a2a_wait_closed": check_a2a_wait_closed,
     "blocked_explained": check_blocked_explained,
     "usage_reported": check_usage_reported,
     "claims_match_events": check_claims_match_events,
@@ -300,6 +374,7 @@ CHECKS: dict[str, Callable[[Turn], dict]] = {
 
 LAYER: dict[str, str] = {
     "turn_closed": TRACE,
+    "a2a_wait_closed": TRACE,
     "blocked_explained": TRACE,
     "usage_reported": TRACE,
     "claims_match_events": AGENT,
@@ -308,6 +383,7 @@ LAYER: dict[str, str] = {
 
 WHAT: dict[str, str] = {
     "turn_closed": "任务结束时回合有终态事件",
+    "a2a_wait_closed": "求助有唯一终态、真实回复和发起者续答",
     "blocked_explained": "失败/阻塞的回合给出了可读的原因",
     "usage_reported": "有产出的回合记录了用量",
     "claims_match_events": "回复里的行动声明不与本回合事件矛盾",
