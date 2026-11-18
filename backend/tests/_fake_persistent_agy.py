@@ -8,7 +8,13 @@ import sys
 import time
 
 
-spec = json.loads(Path(os.environ['AGY_TEST_CONFIG']).read_text())['mcpServers']['yiren_hub']
+# Resolve the MCP server the way agy 1.4 does: workspace plugins.json entries.
+entry = json.loads(Path('.agents/plugins.json').read_text())['entries'][0]
+plugin = Path(entry['path']) / entry['include_only'][0]
+spec = json.loads((plugin / 'mcp_config.json').read_text())['mcpServers']['hub']
+# Real agy also loads global servers; record what it would have seen.
+global_config = Path(os.environ.get('AGY_TEST_GLOBAL', '/nonexistent'))
+global_servers = sorted(json.loads(global_config.read_text())['mcpServers']) if global_config.is_file() else []
 env = os.environ.copy(); env.update(spec['env'])
 mcp = subprocess.Popen([spec['command'], *spec['args']], env=env,
                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -36,7 +42,8 @@ try:
         prompt = json.loads(line)['message']['content']
         token = re.search(r'context_token=([A-Za-z0-9_-]+)', prompt).group(1)
         with record.open('a') as stream:
-            stream.write(json.dumps({'pid': os.getpid(), 'recovery': '【中断恢复】' in prompt}) + '\n')
+            stream.write(json.dumps({'pid': os.getpid(), 'recovery': '【中断恢复】' in prompt,
+                                     'started': time.time(), 'global_servers': global_servers}) + '\n')
         if old_token:
             stale = rpc('tools/call', {'name': 'publish_message', 'arguments': {
                 'context_token': old_token, 'operation_id': 'late', 'content': 'stale'}})
@@ -46,6 +53,7 @@ try:
             sys.exit(3)
         if mode == 'hang':
             time.sleep(60)
+        time.sleep(float(os.environ.get('AGY_TEST_TURN_DELAY', '0')))
         if mode == 'long_tools':
             for index in range(6):
                 emit({'event': 'step_update', 'step_update': {

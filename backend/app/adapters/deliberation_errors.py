@@ -1,4 +1,6 @@
 """Allowlisted public diagnostics; provider output stays private until release."""
+import re
+
 
 MESSAGES = {
     'configuration': 'API 配置无效或凭据已更新，请检查连接与模型。',
@@ -26,6 +28,13 @@ MESSAGES = {
 }
 
 
+# Connection-level failures: the request never got an answer. `": eof` is a Go
+# client's dropped connection after `Post "<url>"`.
+_NETWORK = re.compile(
+    r'econnreset|econnrefused|connection (dropped|reset|refused|closed)|failed to connect'
+    r'|network is unreachable|socket hang up|": eof\b')
+
+
 def failure_code(text, *, exit_code=None):
     value = str(text).lower()
     # Prefer the fatal startup error over secondary network warnings.
@@ -39,10 +48,18 @@ def failure_code(text, *, exit_code=None):
         return 'authentication'
     if 'application network policy is unavailable' in value:
         return 'network_policy'
-    if 'timed out' in value:
+    if 'enotfound' in value or 'getaddrinfo' in value or 'name or service not known' in value:
+        return 'dns'
+    if _NETWORK.search(value):
+        return 'network'
+    if 'timed out' in value or 'timeout after' in value:
         return 'timeout'
-    if 'discussion stopped' in value:
+    if 'overloaded' in value or 'service unavailable' in value or 'server_error' in value:
+        return 'upstream'
+    if 'discussion stopped' in value or '用户停止' in value or '本回合已中止' in value:
         return 'stopped'
+    if 'did not call publish_message' in value:
+        return 'missing_submission'
     return 'missing_submission' if exit_code == 0 else 'execution_failed'
 
 

@@ -11,6 +11,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$ROOT/output/macos}"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd -P)"
 PYTHON_VERSION="${PYTHON_VERSION:-$(cat "$ROOT/.python-version")}"
 BUNDLE_ID="${BUNDLE_ID:-io.github.buaixihongshi.unity}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
@@ -23,9 +25,16 @@ for tool in uv npm swiftc hdiutil codesign; do
   command -v "$tool" >/dev/null || { echo "ERROR: missing $tool" >&2; exit 2; }
 done
 
+# Hermetic bytecode env (#60): interpreter-auto-written .pyc embed absolute
+# build paths, and compileall then skips them as fresh (mtime match), leaking
+# build-machine paths into the bundle. An inherited PYTHONPYCACHEPREFIX would
+# instead redirect even compileall's output out of the bundle entirely.
+export PYTHONDONTWRITEBYTECODE=1
+unset PYTHONPYCACHEPREFIX
+
 SHA="$(git -C "$ROOT" rev-parse HEAD)"
 VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$ROOT/frontend/package.json")"
-BUILD="$(git -C "$ROOT" rev-list --count HEAD)"
+BUILD="${BUILD:-$(git -C "$ROOT" rev-list --count HEAD)}"
 if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]; then
   echo "WARNING: uncommitted changes; the build is labelled dirty and is not a release candidate." >&2
 fi
@@ -51,7 +60,7 @@ PY_SRC="$(uv python find --managed-python "$PYTHON_VERSION")"
 PREFIX="$("$PY_SRC" -c 'import sys; print(sys.prefix)')"
 ditto "$PREFIX" "$RES/python"
 # uv rewrites sysconfig with its install path; restore the upstream placeholder.
-grep -rIl --fixed-strings "$PREFIX" "$RES/python" | while IFS= read -r file; do
+{ grep -rIl --fixed-strings "$PREFIX" "$RES/python" || true; } | while IFS= read -r file; do
   PREFIX="$PREFIX" perl -pi -e 's/\Q$ENV{PREFIX}\E/\/install/g' "$file"
 done
 PY="$RES/python/bin/python3"
@@ -93,17 +102,26 @@ find "$RES/python" "$RES/app" -name '__pycache__' -type d -prune -exec rm -rf {}
   "$RES/python/lib" "$RES/app" >/dev/null || echo "WARNING: some modules did not compile (see compileall)." >&2
 # The backend imports these lazily, so a missing one would only surface in a
 # user's Workflow; import each with the bundled interpreter from a neutral cwd.
-(cd "$BUILD_DIR" && PYTHONDONTWRITEBYTECODE=1 "$PY" -c '
+(cd "$BUILD_DIR" && "$PY" -c '
 import importlib, pathlib, sys
 for module in sorted(pathlib.Path(sys.argv[1]).glob("environment_*.py")):
     importlib.import_module("scripts." + module.stem)
 importlib.import_module("backend.app.extensions.tasks.adaptive")' "$RES/app/scripts") \
   || { echo "ERROR: bundled Workflow modules do not import." >&2; exit 1; }
 
+echo "==> Sparkle"
+source "$ROOT/scripts/sparkle.sh"
+trap 'rm -rf "$SPARKLE_ROOT"' EXIT
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$SPARKLE_ROOT/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+cp "$SPARKLE_ROOT/LICENSE" "$RES/Sparkle-LICENSE" 2>/dev/null || cp "$SPARKLE_ROOT/Sparkle.framework/Resources/LICENSE" "$RES/Sparkle-LICENSE"
+
 echo "==> Native shell"
-swiftc -O -target "$ARCH-apple-macos12.0" -o "$APP/Contents/MacOS/Unity" "$ROOT/packaging/macos/UnityApp.swift"
+swiftc -O -target "$ARCH-apple-macos12.0" -o "$APP/Contents/MacOS/Unity" -F "$APP/Contents/Frameworks" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+  "$ROOT/packaging/macos/UnityApp.swift" "$ROOT/packaging/macos/Updater.swift" "$ROOT/packaging/macos/main.swift"
 sed -e "s/@BUNDLE_ID@/$BUNDLE_ID/" -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" -e "s/@SHA@/$SHA/" \
   "$ROOT/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
+"$PY_DEV" "$ROOT/scripts/configure-macos-updates.py" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 ICONSET="$BUILD_DIR/Unity.iconset"
@@ -146,6 +164,16 @@ while IFS= read -r binary; do
     *) codesign "${sign_args[@]}" --entitlements "$ENTITLEMENTS" "$binary" 2>/dev/null ;;
   esac
 done < "$BUILD_DIR/macho.txt"
+# Sparkle contains nested helper executables, XPC services and an app. Sign
+# inside-out without --deep so every child has our distribution identity.
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+find "$FRAMEWORK" -type f -print0 | while IFS= read -r -d '' binary; do
+  if file -b "$binary" | grep -q 'Mach-O'; then codesign "${sign_args[@]}" "$binary"; fi
+done
+find "$FRAMEWORK" -depth -type d \( -name '*.xpc' -o -name '*.app' \) -print0 | while IFS= read -r -d '' bundle; do
+  codesign "${sign_args[@]}" "$bundle"
+done
+codesign "${sign_args[@]}" "$FRAMEWORK"
 codesign "${sign_args[@]}" --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --deep --strict "$APP"
 

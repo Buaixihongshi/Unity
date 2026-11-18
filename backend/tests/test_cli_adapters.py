@@ -1409,10 +1409,11 @@ def testbuild_failure_summary_exit_code_with_stderr():
 
 
 def testbuild_failure_summary_exit_code_with_long_stderr():
-    long_err = "x" * 300
+    long_err = "x" * 300 + " fatal: the end"
     s = build_failure_summary("codex", exit_code=1, stderr_snippet=long_err)
     assert len(s) < 250
-    assert s.endswith("…")
+    assert s.endswith("fatal: the end")  # the cause is at the end, keep it
+    assert "…" in s
 
 
 def testbuild_failure_summary_os_error():
@@ -1507,3 +1508,38 @@ def test_public_discussion_rules_apply_without_personal_guidelines():
 
     assert COMMON_DISCUSSION_RULES in prompt
     assert "【做本职工作时】" not in prompt
+
+
+def test_fallback_attempt_reopens_blocked_turn_for_live_bubble():
+    """A turn blocked on its first provider is in flight again once the
+    fallback starts; usage events must not add a phantom attempt."""
+    from backend.app.api.mission_detail import _derive_turns
+    from backend.app.domain.models import MissionEvent
+
+    def event(n: int, event_type: str, **payload) -> MissionEvent:
+        return MissionEvent(
+            id=str(n), mission_id="m_fb", event_type=event_type,
+            payload={"turn_id": "turn_1", "agent_id": "chulan", **payload},
+            created_at=f"2026-11-17T10:52:{n:02d}+00:00",
+        )
+
+    events = [
+        event(1, "turn.started", provider_id="claude", attempt=1,
+              started_at="2026-11-17T10:52:01+00:00"),
+        event(2, "turn.blocked", provider_id="claude", attempt=1, error="usage credits"),
+        event(3, "turn.started", provider_id="codex", attempt=2),
+    ]
+    turn = _derive_turns(events)[0]
+    assert turn["status"] == "started"
+    assert turn["provider_id"] == "codex"
+    assert turn["started_at"] == "2026-11-17T10:52:01+00:00"
+
+    events += [
+        event(4, "turn.usage", provider_id="codex", usage={"output_tokens": 1}),
+        event(5, "turn.completed", provider_id="codex", attempt=2, summary="via MCP"),
+    ]
+    turn = _derive_turns(events)[0]
+    assert turn["status"] == "completed"
+    assert [(a["attempt"], a["provider_id"], a["status"]) for a in turn["attempts"]] == [
+        (1, "claude", "blocked"), (2, "codex", "completed"),
+    ]

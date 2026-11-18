@@ -213,12 +213,13 @@ def claude_provider_environment(env):
 
 
 class DeliberationCLIAdapter:
-    def __init__(self, config_dir, timeout, provider_overrides, *, model="", progress_check_interval=PROGRESS_CHECK_SECONDS,
-                 work_context=None):
+    def __init__(self, config_dir, timeout, provider_overrides, *, model="", effort="",
+                 progress_check_interval=PROGRESS_CHECK_SECONDS, work_context=None):
         self.config_dir = config_dir
         self.timeout = timeout
         self.provider_overrides = provider_overrides
         self.model = model
+        self.effort = effort
         self.progress_check_interval = progress_check_interval
         self.work_context = work_context
 
@@ -227,8 +228,8 @@ class DeliberationCLIAdapter:
         if not isolation_supported():
             return TurnOutcome(status=TurnStatus.BLOCKED, summary="isolation_not_supported")
         provider = get_cli_provider(self.config_dir, provider_id, overrides=self.provider_overrides)
-        from backend.app.adapters.model_selection import with_model
-        provider = with_model(provider, self.model)
+        from backend.app.adapters.model_selection import with_model_and_effort
+        provider = with_model_and_effort(provider, self.model, self.effort)
         if not provider.enabled:
             return TurnOutcome(status=TurnStatus.BLOCKED, summary="Provider is disabled")
         basename = Path(provider.command).name

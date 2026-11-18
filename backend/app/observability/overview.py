@@ -124,15 +124,25 @@ def _by_agent(turns: list[Turn]) -> list[dict]:
     buckets: dict[str, dict[str, float]] = {}
     for turn in turns:
         agent = turn.agent_id or "unknown"
-        bucket = buckets.setdefault(agent, {"turns": 0, "tokens": 0, "cost": 0.0, "tools": 0, "native": 0})
+        bucket = buckets.setdefault(agent, {"turns": 0, "tokens": 0, "cost": 0.0, "tools": 0, "native": 0,
+                                            "blocked": 0, "blocked_environment": 0, "blocked_user": 0})
         bucket["turns"] += 1
+        # Only the agent's own failures count as "blocked"; the environment's
+        # and the user's are shown beside it, never mixed in.
+        owner = turn.attribution
+        if owner == "agent":
+            bucket["blocked"] += 1
+        elif owner:
+            bucket[f"blocked_{owner}"] += 1
         bucket["tokens"] += pricing.total_tokens(turn.usage)
         bucket["cost"] += turn.cost_usd or 0.0
         bucket["tools"] += len(turn.tools)
         bucket["native"] += sum(1 for s in turn.steps if s.kind == "native")
     return [
         {"agent": agent, "turns": int(row["turns"]), "tokens": int(row["tokens"]),
-         "cost": round(row["cost"], 2), "tools": int(row["tools"]), "native": int(row["native"])}
+         "cost": round(row["cost"], 2), "tools": int(row["tools"]), "native": int(row["native"]),
+         "blocked": int(row["blocked"]), "blocked_environment": int(row["blocked_environment"]),
+         "blocked_user": int(row["blocked_user"])}
         for agent, row in sorted(buckets.items(), key=lambda kv: -kv[1]["turns"])
     ]
 
@@ -164,7 +174,7 @@ def _failures(turns: list[Turn], limit: int = 8) -> list[dict]:
     for turn in turns:
         for check in turn.checks:
             if check.get("value") == 0:
-                out.append({"check": check["name"], "note": check["note"],
+                out.append({"check": check["name"], "layer": check.get("layer", "agent"), "note": check["note"],
                             "agent": turn.agent_id, "turn_id": turn.turn_id,
                             "mission": turn.mission_title, "at": turn.started_at})
     return sorted(out, key=lambda row: row.get("at") or "", reverse=True)[:limit]
@@ -203,8 +213,8 @@ def collect_overview(
     names = agent_names or {}
     summary = checks_module.summarize(turns)
     checks = [
-        {"name": row["name"], "what": row["what"], "pass": row["passed"],
-         "fail": row["failed"], "na": row["na"], "rate": row["pass_rate"]}
+        {"name": row["name"], "layer": row["layer"], "health": row["health"], "what": row["what"],
+         "pass": row["passed"], "fail": row["failed"], "na": row["na"], "rate": row["pass_rate"]}
         for row in summary["checks"]
     ]
     coverage = _coverage(turns)

@@ -469,36 +469,41 @@ def test_gemini_writes_settings_json_under_temp_home(repository, temp_settings, 
     assert "--skip-trust" in captured_cmd, "gemini cmd must include --skip-trust"
 
 
-def test_antigravity_guards_global_config_instead_of_dot_agents(
+def test_antigravity_registers_mcp_as_workspace_plugin_not_global_config(
     repository, temp_settings, seeded_mission, tmp_path, monkeypatch
 ):
-    """agy injects MCP by guarding the global ~/.gemini/config/mcp_config.json,
-    NOT by writing <workspace>/.agents/mcp_config.json (agy never reads that)."""
+    """agy gets the hub through its cwd's .agents/plugins.json; ~/.gemini is never touched,
+    so concurrent agy runs cannot see each other's server."""
     import json as _json
     import unittest.mock as _mock
     from pathlib import Path as _Path
     from backend.app.adapters import antigravity_config as _agc
 
-    # Redirect Path.home so the guard touches tmp, never the real ~/.gemini.
     monkeypatch.setattr(_Path, "home", classmethod(lambda cls: tmp_path))
 
     tools = MCPTools(repository, temp_settings.artifact_root)
     captured_cmd: list[str] = []
     captured_env: dict = {}
-    captured_kwargs: dict = {}
-    global_during_run: dict = {}
+    captured: dict = {}
 
     def capture_inspector(config_path: Path) -> None:
-        # config_path is now an observability copy in the temp workspace.
-        captured_kwargs["config_path"] = str(config_path)
-        captured_kwargs["config_text"] = config_path.read_text(encoding="utf-8")
+        captured["config_path"] = config_path
 
     def spy_popen(cmd, **kwargs):
         captured_cmd.extend(cmd)
         captured_env.update(kwargs.get("env", {}))
-        captured_kwargs["cwd"] = kwargs.get("cwd")
-        # The guard must have injected the global config by the time agy starts.
-        global_during_run["text"] = _agc.global_mcp_config_path().read_text(encoding="utf-8")
+        cwd = Path(kwargs["cwd"])
+        captured["cwd"] = cwd
+        # Resolve the server exactly as agy does, while the run is live.
+        entry = _json.loads((cwd / ".agents" / "plugins.json").read_text())["entries"][0]
+        plugin = Path(entry["path"]) / entry["include_only"][0]
+        captured["servers"] = _json.loads((plugin / "mcp_config.json").read_text())["mcpServers"]
+        # Older Unity builds need the lock exclusively; they must be shut out while agy runs.
+        try:
+            with _agc._flock(timeout=0):
+                captured["legacy_could_inject"] = True
+        except TimeoutError:
+            captured["legacy_could_inject"] = False
         return _make_mock_proc()
 
     adapter = MCPSubprocessAdapter(
@@ -513,20 +518,16 @@ def test_antigravity_guards_global_config_instead_of_dot_agents(
     with _mock.patch("backend.app.adapters.mcp_subprocess.subprocess.Popen", side_effect=spy_popen):
         adapter.run_turn(seeded_mission.id, "wangye", "t_agy", "antigravity", "请发声", tools)
 
-    # No .agents/ config is written anymore.
-    assert ".agents" not in captured_kwargs["config_path"]
-    # Global config carried our server during the run...
-    injected = _json.loads(global_during_run["text"])
-    assert "yiren_hub" in injected["mcpServers"]
-    server = injected["mcpServers"]["yiren_hub"]
+    server = captured["servers"][_agc.PLUGIN_SERVER]
     assert "backend.app.mcp.server" in " ".join(server.get("args", []))
     assert seeded_mission.id in server["env"].get("YIREN_MCP_MISSION_ID", "")
     assert "PYTHONPATH" in server["env"]
-    # ...and was restored (did not exist before -> absent after).
+    assert captured["config_path"].is_relative_to(captured["cwd"])
     assert not _agc.global_mcp_config_path().exists()
+    assert captured["legacy_could_inject"] is False
+    # The prompt names the namespaced server agy shows the model.
+    assert _agc.SERVER_NAME in captured_cmd[-1]
 
-    # cwd is the throwaway workspace (the debug config lives in it).
-    assert captured_kwargs["cwd"] == str(Path(captured_kwargs["config_path"]).parent)
     assert "GEMINI_CLI_HOME" not in captured_env
     assert "--dangerously-skip-permissions" in captured_cmd
     assert "-p" in captured_cmd

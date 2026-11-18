@@ -164,6 +164,82 @@ def test_claims_ignore_plans_and_denials():
     assert checks.check_claims_match_events(turn)["value"] == checks.NA
 
 
+@pytest.mark.parametrize("reply", [
+    "等宝宝已经确认之后再继续。",
+    "等宝宝已经确认，之后再继续。",
+    "等宝宝已经确认, 后再继续。",
+    "等宝宝已经确认；之后再继续。",
+    "等宝宝已经回复了，稍后再继续。",
+    "等宝宝已经回复了, 随后再继续。",
+    "等宝宝已经确认稍后再继续。",
+    "等宝宝已经确认；随后再继续。",
+])
+def test_failed_wait_confirmation_plan_is_not_a_completed_claim(reply):
+    turn = turn_with(reply)
+    turn.a2a_failed_targets = ["baobao"]
+    assert checks.check_claims_match_events(turn)["value"] is checks.NA
+
+
+@pytest.mark.parametrize("reply", [
+    "等宝宝已经确认，之后再继续；宝宝已经回复了。",
+    "宝宝已经回复了，等宝宝已经确认，之后再继续。",
+    "等宝宝已经确认。之后再继续，宝宝已经回复了。",
+    "等宝宝已经回复了，稍后再继续；宝宝已经确认了。",
+    "宝宝已经回复了，等宝宝已经确认，随后再继续。",
+])
+def test_wait_plan_does_not_hide_another_completed_confirmation(reply):
+    turn = turn_with(reply)
+    turn.a2a_failed_targets = ["baobao"]
+    assert checks.check_claims_match_events(turn)["value"] == checks.FAIL
+
+
+@pytest.mark.parametrize("reply,target,expected", [
+    ("等宝宝已经回复了。之后再继续。", "baobao", None),
+    ("等宝宝已经回复了,处理好手头的事之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。之后再继续。宝宝已经确认了。", "baobao", 0),
+    ("宝宝已经回复了,稍后再继续。", "baobao", 0),
+    ("宝宝已经回复了,等宝宝已经确认,之后再继续。", "baobao", 0),
+    ("等宝宝已经回复了。王也已经确认了。之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。王也已经确认了。之后再继续。", "wangye", 0),
+    ("等宝宝已经回复了,王也已经确认了,之后再继续。", "baobao", None),
+    ("等宝宝已经回复了,王也已经确认了,之后再继续。", "wangye", 0),
+    ("等宝宝回复了,不过宝宝已经确认了细节,之后再继续。", "baobao", 0),
+    ("等下。宝宝已经回复了。之后再继续。", "baobao", 0),
+    ("王也、楚岚等都已经回复了。之后再继续。", "wangye", None),
+    ("等宝宝已经回复了。宝宝已经回复了。之后再继续。", "baobao", 0),
+    ("等宝宝已经回复了。等王也确认之后再继续。", "baobao", 0),
+    ("等宝宝已经确认,之后再继续;宝宝已经回复了。", "baobao", 0),
+    ("等宝宝已经确认,之后再继续。", "baobao", None),
+    ("等宝宝已经回复了,稍后再继续。", "baobao", None),
+    ("我先等宝宝已经回复了,之后再继续。", "baobao", None),
+    ("我先等宝宝已经回复了。之后再继续。", "baobao", 0),
+    # Deletion must preserve the original wait boundary and first clause.
+    ("等宝宝已经回复了。等王也之后再继续，宝宝稍后再确认。", "baobao", 0),
+    ("等结束之后宝宝已经确认了。之后再继续。", "baobao", 0),
+    # Additional guards for the actual first-clause exemption.
+    ("等但宝宝已经回复了。之后再继续。", "baobao", 0),
+    ("等宝宝已经回复了。", "baobao", 0),
+    ("等宝宝未回复了。之后再继续。", "baobao", None),
+    ("等宝宝没有已经回复了。之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。等下。之后再继续。", "baobao", 0),
+    ("**等宝宝已经回复了**！之后再继续。", "baobao", None),
+    ("等宝宝已经回复了\n之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。之后王也已经确认了。", "baobao", None),
+    ("等宝宝回复。之后王也确认了再说。", "wangye", 0),
+])
+def test_failed_wait_distant_endpoint_boundary(reply, target, expected):
+    turn = turn_with(reply)
+    turn.a2a_failed_targets = [target]
+    assert checks.check_claims_match_events(turn)["value"] is expected
+
+
+def test_wait_endpoint_with_another_failed_target_claim_is_not_an_anchor():
+    turn = turn_with("等宝宝已经回复了。之后王也已经确认了。")
+    turn.a2a_failed_targets = ["baobao", "wangye"]
+    # A claim-bearing endpoint cannot excuse baobao; report the first failure.
+    assert checks._false_partner_confirmation(turn) == "baobao"
+
+
 def test_claims_fail_when_reply_says_done_but_turn_blocked():
     turn = turn_with("已经修复好了。", status="blocked")
     result = checks.check_claims_match_events(turn)
@@ -203,9 +279,9 @@ def test_run_checks_never_raises(monkeypatch):
         raise RuntimeError("bad check")
 
     monkeypatch.setitem(checks.CHECKS, "claims_match_events", boom)
-    result = checks.run_checks(turn_with("hi"))
-    assert result[0] == {"name": "claims_match_events", "source": "code", "value": None,
-                         "note": "check error"}
+    result = {c["name"]: c for c in checks.run_checks(turn_with("hi"))}
+    assert result["claims_match_events"] == {"name": "claims_match_events", "source": "code",
+                                             "layer": "agent", "value": None, "note": "check error"}
 
 
 # ---------------------------------------------------------------------------
@@ -541,3 +617,48 @@ def test_turn_api_returns_detail_and_404(temp_settings):
     assert response.status_code == 200
     assert response.json()["turn"]["turn_id"] == "t_new"
     assert client.get("/api/observability/turns/missing").status_code == 404
+
+
+@pytest.mark.parametrize('damage, expected', [
+    ('valid', 1), ('missing', 0), ('duplicate', 0), ('wrong_turn', 0),
+    ('wrong_message', 0), ('wrong_message_owner', 0), ('no_resume', 0),
+    ('cancelled', 1), ('pending', None), ('legacy', None),
+])
+def test_wait_closed_requires_causal_reply_and_continuation(damage, expected):
+    m = mission()
+    m.status = 'running' if damage == 'pending' else 'completed'
+    events = [
+        event(1, 'turn.started', turn_id='caller', agent_id='chulan'),
+        event(2, 'turn.completed', turn_id='caller'),
+        event(3, 'a2a.invoke', sender_turn_id='caller', sender_agent_id='chulan',
+              target_agent_id='baobao', mode='wait_reply', callee_step_id='step'),
+        event(4, 'a2a.step.started', turn_id='callee', agent_id='baobao', step_id='step', origin='a2a'),
+        event(5, 'turn.started', turn_id='callee', agent_id='baobao'),
+        event(6, 'turn.completed', turn_id='callee'),
+        event(7, 'a2a.reply', invoke_event_id='3', turn_id='callee', reply_message_id='msg_callee'),
+        event(8, 'a2a.step.started', turn_id='resume', agent_id='chulan', step_id='resume_step', origin='a2a_resume', parent_step_id='step'),
+        event(9, 'turn.started', turn_id='resume', agent_id='chulan'),
+        event(10, 'turn.completed', turn_id='resume'),
+    ]
+    msg = message('callee', '伙伴的最终回复')
+    msg.agent_id = 'baobao'
+    if damage in ('missing', 'pending', 'cancelled'):
+        events = events[:6]
+    if damage == 'cancelled':
+        events.append(event(7, 'a2a.cancelled', cancelled_steps=[{'step_id': 'step', 'origin': 'a2a'}]))
+    if damage == 'duplicate':
+        events.append(event(11, 'a2a.reply.failed', invoke_event_id='3', turn_id='callee'))
+    if damage == 'wrong_turn':
+        events[6].payload['turn_id'] = 'unrelated'
+    if damage == 'wrong_message':
+        events[6].payload['reply_message_id'] = 'nonexistent'
+    if damage == 'wrong_message_owner':
+        msg.agent_id = 'wangye'
+    if damage == 'no_resume':
+        events = events[:7]
+    if damage == 'legacy':
+        events[2].payload.pop('callee_step_id')
+    caller = build_turns(reversed(events), [msg], m)[0]
+    result = checks.check_a2a_wait_closed(caller)
+    assert result['value'] == expected, result
+    assert 'invoke 3' in result['note']

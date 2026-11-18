@@ -129,6 +129,10 @@ def test_a4_nested_wait_reply_resumes_outer_requester_with_final_answer(reposito
     assert "稍后再答" not in chulan_resume.split("对方的回复", 1)[1]
     deferred = [e.payload for e in events if e.event_type == "a2a.reply.deferred"]
     assert len(deferred) == 1 and deferred[0]["agent_id"] == "baobao"
+    from backend.app.observability.service import collect_turns
+    scores = [c for t in collect_turns(repository, mission_id=mission.id) for c in t.checks
+              if c['name'] == 'a2a_wait_closed' and c['value'] is not None]
+    assert len(scores) == 2 and all(c['value'] == 1 for c in scores)
     replies = [e.payload for e in events if e.event_type == "a2a.reply"]
     assert [(r["agent_id"], r["sender_agent_id"]) for r in replies] == [("wangye", "baobao"), ("baobao", "chulan")]
 
@@ -183,3 +187,17 @@ def test_subprocess_env_carries_scheduled_agents(tmp_path):
                            max_a2a_invocations=2, scheduled_agent_ids=["wangye"])
 
     assert env["YIREN_MCP_SCHEDULED_AGENTS"] == "wangye"
+
+
+def test_multiple_waits_in_one_turn_pair_each_invoke(repository, temp_settings):
+    mission, adapter, events = _run(repository, temp_settings, "m_same_turn_waits", {
+        "chulan": [{"invoke": [("baobao", "第一问", "wait_reply"), ("baobao", "第二问", "wait_reply")]}],
+        "baobao": [{"text": "第一答"}, {"text": "第二答"}],
+    }, max_a2a=4)
+    invokes = [str(e.id) for e in events if e.event_type == 'a2a.invoke']
+    replies = [e.payload for e in events if e.event_type == 'a2a.reply']
+    assert [p['invoke_event_id'] for p in replies] == invokes
+    from backend.app.observability.service import collect_turns
+    scores = [c for t in collect_turns(repository, mission_id=mission.id) for c in t.checks
+              if c['name'] == 'a2a_wait_closed' and c['value'] is not None]
+    assert len(scores) == 1 and scores[0]['value'] == 1

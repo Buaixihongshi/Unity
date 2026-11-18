@@ -78,8 +78,9 @@ export function ChatBubble({ turn, onEdit }: { turn: TurnView; onEdit?: () => vo
             老板{turn.metadata.revised ? <span className="bubble-revised">已修改</span> : null}
           </div>
           <MessageMarkdown content={turn.content} />
-          {onEdit && <button type="button" className="bubble-edit" onClick={onEdit} aria-label="编辑上一条消息" title="编辑消息"><Pencil size={16} aria-hidden="true" /></button>}
         </article>
+        {/* Sits beside the bubble so editing never adds height to the message itself. */}
+        {onEdit && <button type="button" className="bubble-edit" onClick={onEdit} aria-label="编辑上一条消息" title="编辑消息"><Pencil size={14} aria-hidden="true" /></button>}
       </div>
     );
   }

@@ -86,6 +86,11 @@ MODEL_HANDOVER = HostRule(
     'model_handover', 'hint', 'none',
     '【模型交接】（本角色自上次执行以来发生模型/Provider 切换；按以下记录接续，不要因换模型重置已确认的事实）：',
 )
+AGY_SERVER_NAME = HostRule(
+    'agy_server_name', 'hint', 'none',
+    '本 CLI 里 yiren_hub 工具挂在 MCP 服务 unity_hub 下：经 call_mcp_tool 调用时 ServerName 填 unity_hub。',
+)
 
 RULES = (SPEAK, HANDOFF_BEFORE_SPEAK, CONTEXT_TOKEN, OPERATION_ID, HOST_OWNS_STATUS, NO_REPLAY,
-         SOLO, DELIVERY_BOUNDARY, A2A_USAGE, A2A_BUDGET, ARTIFACT_QUOTE, MODEL_HANDOVER)
+         SOLO, DELIVERY_BOUNDARY, A2A_USAGE, A2A_BUDGET, ARTIFACT_QUOTE, MODEL_HANDOVER,
+         AGY_SERVER_NAME)

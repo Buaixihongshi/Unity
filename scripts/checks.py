@@ -29,7 +29,7 @@ def commands(py, output):
         "eval": [[py, "scripts/run_eval.py", "--mode", "fixture", "--quiet", "--output", str(output / "eval")]],
         "privacy": [[py, "scripts/privacy-check.py", "--git"]],
         "hygiene": [["git", "diff", "--check"], ["git", "diff", "--cached", "--check"]],
-        "audit": [["npm", "--prefix", "frontend", "audit"]],
+        "audit": [[py, "scripts/audit_frontend.py"]],
         "real-cli": [[py, "scripts/smoke_conversation_flow.py", "--real", "--timeout-seconds", "420"],
                      [py, "scripts/smoke_real_cli_mission.py", "--real", "--timeout-seconds", "300"]],
     }

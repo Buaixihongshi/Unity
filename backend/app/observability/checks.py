@@ -20,7 +20,9 @@ from __future__ import annotations
 import re
 from typing import Callable, Optional
 
-from backend.app.observability.turns import A2A, NATIVE, TOOL, Turn
+from backend.app.adapters.failure_text import is_informative
+from backend.app.observability.pricing import total_tokens
+from backend.app.observability.turns import A2A, NATIVE, TOOL, Step, Turn
 
 PASS, FAIL, NA = 1, 0, None
 
@@ -54,23 +56,73 @@ _CLAIM_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("done", re.compile(r"已完成|已修复|修复好了|已经修复|已解决|搞定了|已处理|已经修好")),
 ]
 _PLAN = re.compile(r"建议|可以|应该|将会|下一步|如果|若|假如|一旦|需要|计划|打算|不妨|待|设想|原则是|预计")
+_WAIT_PLAN = re.compile(r"等[^，,；;。！？\n]*?(?:[，,；;]\s*)?(?:之后|(?:稍|随)?后再)")
 _DENIAL = re.compile(r"没有|没|未|无法|不能|尚未|并未")
 _CONTRAST = re.compile(r"但|不过|却|而是")
 _SENTENCE = re.compile(r"[。！？\n]+")
 _MARKUP = re.compile(r"[*_`#>]+")
 _FAILURE_WORDS = re.compile(
-    r"失败|报错|错误|未能|无法|超时|拒绝|没跑|未跑|跳过|不可用|异常|error|failed|timeout",
+    r"失败|报错|错误|未能|无法|超时|拒绝|没跑|未跑|跳过|不可用|异常|"
+    r"没找到|找不到|未找到|不存在|没成|没能|不了|没叫|耗尽|"
+    r"error|failed|timeout|not found",
     re.IGNORECASE,
 )
+# A native shell step "fails" whenever its command exits nonzero: grep with no
+# match, a test run before the fix. That is the agent exploring, not a broken
+# tool, and the trace cannot tell which command a claim refers to.
+_COMMAND_TOOLS = {"shell", "bash", "run_command", "command_execution", "exec_command"}
+# Words a reply uses for a tool when it does not write the tool's name.
+_TOOL_ALIASES = {
+    "invoke_agent": ("委派", "交接", "接力", "转给", "叫", "@"),
+    "read_artifact": ("文件", "产物", "artifact"),
+    "write_artifact": ("文件", "产物", "artifact", "写入", "保存"),
+}
+_FILE_NAME = re.compile(r"[\w.-]+\.[A-Za-z0-9]{1,8}")
 
 
-def _sentences(reply: str) -> list[str]:
+def _sentences(reply: str, *, min_length: int = 6) -> list[str]:
     out = []
     for raw in _SENTENCE.split(reply or ""):
         text = _MARKUP.sub("", raw).strip(" -—·")
-        if len(text) >= 6:
+        if len(text) >= min_length:
             out.append(text)
     return out
+
+
+def _is_command_exit(step: Step) -> bool:
+    return step.kind == NATIVE and step.tool.lower() in _COMMAND_TOOLS
+
+
+def _failed_calls(turn: Turn) -> list[Step]:
+    """Tool calls that actually failed, leaving out commands that merely exited nonzero."""
+    return [s for s in turn.tools if not s.ok and not _is_command_exit(s)]
+
+
+def _recovered(step: Step, turn: Turn) -> bool:
+    """A later call succeeded: the same tool again, or any tool on the same file."""
+    position = next((i for i, s in enumerate(turn.steps) if s is step), len(turn.steps))
+    later = turn.steps[position + 1:]
+    files = set(_FILE_NAME.findall(step.error or ""))
+    for other in later:
+        if not other.ok or other.kind not in (TOOL, NATIVE):
+            continue
+        if other.tool == step.tool:
+            return True
+        if files and any(name in (other.summary or "") for name in files):
+            return True
+    return False
+
+
+def _acknowledged(step: Step, reply: str) -> bool:
+    """Some sentence of the reply says this call went wrong, in any wording.
+
+    The sentence must carry a failure word and name the call: its tool name, a
+    plain-language alias, or the file the error was about.
+    """
+    names = {step.tool, *_TOOL_ALIASES.get(step.tool, ()), *_FILE_NAME.findall(step.error or "")}
+    names.discard("")
+    return any(_FAILURE_WORDS.search(sentence) and any(n in sentence for n in names)
+               for sentence in _sentences(reply))
 
 
 def _negated(sentence: str, match: re.Match) -> bool:
@@ -95,7 +147,68 @@ def claims(reply: str) -> list[tuple[str, str]]:
 # ---- the checks -------------------------------------------------------------
 
 def _result(name: str, value, note: str) -> dict:
-    return {"name": name, "source": "code", "value": value, "note": note}
+    return {"name": name, "source": "code", "layer": LAYER.get(name, AGENT),
+            "value": value, "note": note}
+
+
+def _false_partner_confirmation(turn: Turn) -> Optional[str]:
+    """Match completed confirmation claims only against this continuation's failed wait."""
+    if not turn.a2a_failed_targets:
+        return None
+    from backend.app.domain.agent_registry import get_agent_registry
+    registry = get_agent_registry()
+    patterns = []
+    for target in turn.a2a_failed_targets:
+        profile = next((a for a in registry.all() if a.id == target), None)
+        names = {target}
+        if profile:
+            names.update((profile.display_name, *profile.aliases))
+        names.update({"baobao": ("宝宝", "冯宝宝"), "chulan": ("楚岚", "张楚岚")}.get(target, ()))
+        partner = "(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True) if n) + ")"
+        pattern = re.compile(
+            partner + r"(?:已经|已)(?:确认|回复|核实)|"
+            + partner + r"(?:确认|回复|核实)了|"
+            + r"(?:收到|拿到)(?:了)?" + partner + r"(?:的)?(?:确认|回复)"
+        )
+        patterns.append((target, pattern))
+
+    # Keep natural-sentence boundaries from the original text: deleting a later
+    # "等…之后" span must not erase the boundary of a new waiting structure.
+    sentences = _sentences(turn.reply, min_length=1)
+    clauses = [_sentences(re.sub(r"[，,；;]", "。", s), min_length=1) for s in sentences]
+    endpoint = re.compile(r"之后|(?:稍|随)?后再")
+    anchored = [False] * len(sentences)
+    following_anchor = False
+    for index in range(len(sentences) - 1, -1, -1):
+        anchored[index] = following_anchor or any(
+            endpoint.search(clause)
+            and not any(p.search(clause) for _, p in patterns)
+            for clause in clauses[index]
+        )
+        # The current natural sentence belongs to the previous search window
+        # only if it does not begin a new waiting structure.
+        following_anchor = anchored[index] if not sentences[index].startswith("等") else False
+
+    for target, pattern in patterns:
+        for index, raw in enumerate(sentences):
+            first = clauses[index][0] if clauses[index] else ""
+            # Preserve the existing local deletion; the new exemption applies
+            # only to an unchanged first clause, never text exposed by deletion.
+            reply = _WAIT_PLAN.sub("", raw)
+            for clause_index, sentence in enumerate(
+                _sentences(re.sub(r"[，,；;]", "。", reply), min_length=1)
+            ):
+                if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
+                    continue
+                for match in pattern.finditer(sentence):
+                    if _negated(sentence, match):
+                        continue
+                    if (clause_index == 0 and sentence == first and raw.startswith("等")
+                            and anchored[index]
+                            and not _CONTRAST.search(sentence[max(0, match.start() - 20):match.start()])):
+                        continue
+                    return target
+    return None
 
 
 def check_claims_match_events(turn: Turn) -> dict:
@@ -107,6 +220,9 @@ def check_claims_match_events(turn: Turn) -> dict:
     errored. A claim with no event either way is `n/a`, because the CLI's own
     tools are not always traced.
     """
+    target = _false_partner_confirmation(turn)
+    if target is not None:
+        return _result("claims_match_events", FAIL, f"声称 {target} 已确认/回复，但本次求助 reply.failed")
     found = claims(turn.reply)
     if not found:
         return _result("claims_match_events", NA, "回复没有可核对的行动声明")
@@ -115,6 +231,7 @@ def check_claims_match_events(turn: Turn) -> dict:
     invoked = [s for s in turn.a2a if s.tool == "invoke"]
     write_errors = [s for s in turn.tools if s.tool == "write_artifact" and not s.ok]
     failed = turn.status in ("blocked", "failed")
+    published = any(s.tool == "publish_message" and s.ok for s in turn.tools)
 
     contradictions: list[str] = []
     confirmed = 0
@@ -130,12 +247,15 @@ def check_claims_match_events(turn: Turn) -> dict:
             elif turn.artifacts:
                 confirmed += 1
         elif kind == "done":
-            if failed:
+            # A reply the agent published before the turn ended was its own
+            # word; a block that came afterwards does not contradict it.
+            if failed and not published:
                 contradictions.append(f"声称已完成，但回合 {turn.status}")
             elif turn.status == "completed":
                 confirmed += 1
         elif kind == "exec":
-            if any(not s.ok and any(k in s.tool.lower() for k in ("run", "exec", "shell", "test", "git"))
+            if any(not s.ok and not _is_command_exit(s)
+                   and any(k in s.tool.lower() for k in ("run", "exec", "shell", "test", "git"))
                    for s in turn.steps):
                 contradictions.append("声称已执行，但执行类工具失败")
             elif any(s.kind == NATIVE and any(k in s.tool.lower() for k in ("run", "command", "exec"))
@@ -149,21 +269,24 @@ def check_claims_match_events(turn: Turn) -> dict:
 
 
 def check_tool_errors_handled(turn: Turn) -> dict:
-    """Every failed tool call was retried in the turn, or the reply names it.
+    """Every failed tool call was recovered in the turn, or the reply admits it.
 
     Same rule as the failure check in the agent's own instructions: an error
-    the user never hears about is worse than the error.
+    the user never hears about is worse than the error. Recovered means the
+    same tool, or any tool on the same file, later succeeded. Admitted means a
+    sentence of the reply pairs a failure word with the call, however the
+    agent words it. A shell command that exits nonzero is not a failed call.
     """
-    failed = [s for s in turn.tools if not s.ok]
+    failed = _failed_calls(turn)
     if not failed:
         return _result("tool_errors_handled", NA, "本回合没有失败的工具调用")
+    if turn.status in ("blocked", "failed") and not turn.reply.strip():
+        # No reply to judge; why the turn ended is blocked_explained's question.
+        return _result("tool_errors_handled", NA, "回合阻塞且没有回复")
 
     unhandled = []
     for step in failed:
-        retried = any(other is not step and other.tool == step.tool and other.ok
-                      for other in turn.tools)
-        mentioned = bool(_FAILURE_WORDS.search(turn.reply)) and step.tool in turn.reply
-        if not (retried or mentioned):
+        if not (_recovered(step, turn) or _acknowledged(step, turn.reply)):
             unhandled.append(step.tool or "unknown")
     if unhandled:
         return _result("tool_errors_handled", FAIL,
@@ -172,27 +295,105 @@ def check_tool_errors_handled(turn: Turn) -> dict:
 
 
 def check_blocked_explained(turn: Turn) -> dict:
-    """A blocked or failed turn must say why — in its error or in its reply."""
+    """A blocked or failed turn must say why — in its error or in its reply.
+
+    A non-empty error is not an explanation. "exit_code=1" followed by the
+    CLI's init event or a startup banner names no cause, and passing it made
+    this check unable to fail.
+    """
     if turn.status not in ("blocked", "failed"):
         return _result("blocked_explained", NA, "回合正常结束")
-    if turn.error.strip():
-        return _result("blocked_explained", PASS, f"记录了原因：{turn.error.strip()[:80]}")
-    if turn.reply.strip():
+    if is_informative(turn.error):
+        return _result("blocked_explained", PASS,
+                       f"[{turn.failure_class}] {turn.error.strip()[:80]}")
+    if _FAILURE_WORDS.search(turn.reply):
         return _result("blocked_explained", PASS, "回复里说明了失败")
+    if turn.error.strip():
+        return _result("blocked_explained", FAIL,
+                       f"记录的只有退出码或启动输出：{turn.error.strip()[:60]}")
     return _result("blocked_explained", FAIL, "回合失败且没有任何说明")
 
 
+_ENDED_MISSION = {"blocked", "completed", "failed", "completed_with_warnings"}
+
+
+def check_a2a_wait_closed(turn: Turn) -> dict:
+    if not turn.a2a_waits:
+        return _result("a2a_wait_closed", NA, "本回合没有 wait_reply 求助")
+    failures = [note for value, note in turn.a2a_waits if value == FAIL]
+    pending = [note for value, note in turn.a2a_waits if value is None]
+    return _result("a2a_wait_closed", FAIL if failures else NA if pending else PASS,
+                   "；".join(failures or pending or [note for _, note in turn.a2a_waits]))
+
+
+def check_turn_closed(turn: Turn) -> dict:
+    """A turn whose mission has ended must have ended too.
+
+    Without a terminal event the turn's status is a guess ("running"), and
+    every check that reads the status — a claimed "done" against a block —
+    would be judging a guess.
+    """
+    if turn.status != "running":
+        return _result("turn_closed", PASS, f"回合以 {turn.status} 结束")
+    if turn.mission_status in _ENDED_MISSION:
+        return _result("turn_closed", FAIL, f"任务已 {turn.mission_status}，回合却没有终态事件")
+    return _result("turn_closed", NA, "任务仍在进行")
+
+
+def check_usage_reported(turn: Turn) -> dict:
+    """A turn that produced something must have a usage record with tokens in it.
+
+    Without one its cost is invisible, and spend totals quietly undercount.
+    A turn that produced nothing may well have consumed nothing.
+    """
+    if turn.status == "running":
+        return _result("usage_reported", NA, "回合未结束")
+    if turn.provider_id == "fake":
+        return _result("usage_reported", NA, "演示 provider 不计费")
+    if total_tokens(turn.usage) > 0:
+        return _result("usage_reported", PASS, f"{total_tokens(turn.usage)} tokens")
+    if not (turn.reply.strip() or turn.steps):
+        return _result("usage_reported", NA, "回合没有产出，也没有用量")
+    missing = "没有用量记录" if turn.usage is None else "用量全为 0"
+    return _result("usage_reported", FAIL, f"回合有产出，但{missing}（{turn.provider_id or '未知 provider'}）")
+
+
+# Trace checks ask whether the record can be believed; agent checks ask whether
+# the agent behaved. They are reported apart because a pipeline bug and an
+# agent's mistake have different owners and different fixes.
+TRACE, AGENT = "trace", "agent"
+
 CHECKS: dict[str, Callable[[Turn], dict]] = {
+    "turn_closed": check_turn_closed,
+    "a2a_wait_closed": check_a2a_wait_closed,
+    "blocked_explained": check_blocked_explained,
+    "usage_reported": check_usage_reported,
     "claims_match_events": check_claims_match_events,
     "tool_errors_handled": check_tool_errors_handled,
-    "blocked_explained": check_blocked_explained,
+}
+
+LAYER: dict[str, str] = {
+    "turn_closed": TRACE,
+    "a2a_wait_closed": TRACE,
+    "blocked_explained": TRACE,
+    "usage_reported": TRACE,
+    "claims_match_events": AGENT,
+    "tool_errors_handled": AGENT,
 }
 
 WHAT: dict[str, str] = {
+    "turn_closed": "任务结束时回合有终态事件",
+    "a2a_wait_closed": "求助有唯一终态、真实回复和发起者续答",
+    "blocked_explained": "失败/阻塞的回合给出了可读的原因",
+    "usage_reported": "有产出的回合记录了用量",
     "claims_match_events": "回复里的行动声明不与本回合事件矛盾",
-    "tool_errors_handled": "失败的工具调用被重试或在回复中说明",
-    "blocked_explained": "失败/阻塞的回合给出了原因",
+    "tool_errors_handled": "失败的工具调用被恢复或在回复中承认",
 }
+
+# A trace failure that makes the agent checks' evidence untrustworthy. Missing
+# usage or a vague block reason does not change what the agent said or did;
+# a turn with no terminal event has no real status to compare claims against.
+_GATES = ("turn_closed",)
 
 
 def run_checks(turn: Turn) -> list[dict]:
@@ -200,14 +401,40 @@ def run_checks(turn: Turn) -> list[dict]:
 
     Observability must not be able to break the page it feeds. If a check has a
     bug, that is a bug to fix in the check, not a reason for a blank screen.
+    Trace checks run first; when one of the gates fails, the agent checks are
+    `n/a` rather than graded on a record that cannot be believed.
     """
     out = []
+    gated = ""
     for name, check in CHECKS.items():
+        if gated and LAYER[name] == AGENT:
+            out.append(_result(name, NA, f"trace 不可信，不评（{gated}）"))
+            continue
         try:
-            out.append(check(turn))
+            result = check(turn)
         except Exception:  # noqa: BLE001 - a check must never break the reader
-            out.append(_result(name, NA, "check error"))
+            result = _result(name, NA, "check error")
+        out.append(result)
+        if name in _GATES and result["value"] == FAIL:
+            gated = name
     return out
+
+
+# A check earns its place by being able to fail. These thresholds only decide
+# when there is enough data to say it has not.
+_SILENT_AFTER = 20  # scored turns with no failure
+_BLIND_AFTER = 50   # turns, of which almost all are n/a
+_BLIND_RATE = 0.95
+
+
+def health(passed: int, failed: int, na: int) -> Optional[str]:
+    """Why this check's numbers may not mean much, or None when they do."""
+    total = passed + failed + na
+    if total >= _BLIND_AFTER and na / total >= _BLIND_RATE:
+        return f"{round(na / total * 100)}% 的回合判不了，覆盖不足"
+    if passed + failed >= _SILENT_AFTER and failed == 0:
+        return f"{passed} 次评判从未失败，可能没有判别力"
+    return None
 
 
 def summarize(turns: list[Turn]) -> dict:
@@ -230,6 +457,8 @@ def summarize(turns: list[Turn]) -> dict:
         scored = passed + failed
         rows.append({
             "name": name,
+            "layer": LAYER[name],
+            "health": health(passed, failed, na),
             "what": what,
             "passed": passed,
             "failed": failed,

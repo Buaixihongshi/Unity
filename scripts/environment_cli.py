@@ -13,7 +13,7 @@ import urllib.error
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.environment_common import EnvironmentError, checkout_listening, git, home, lock, profiles, state_path
-from scripts.environment_supervisor import alive, read_record, start, stop, supervise
+from scripts.environment_supervisor import alive, read_record, running_instances, start, stop, supervise
 
 
 def managed_checkout(path):
@@ -72,6 +72,8 @@ def options(parser, checkout=True):
     parser.add_argument("--no-open", action="store_true", help="Compatibility: browser is opened only with --open")
     parser.add_argument("--open", action="store_true")
     parser.add_argument("--detach", action="store_true")
+    parser.add_argument("--idle-stop", type=int, metavar="MINUTES",
+                        help="Stop after this many minutes without requests and with no unfinished work; 0 disables (development default: config)")
     parser.add_argument("--backend-only", action="store_true")
     parser.add_argument("--reload", action="store_true", default=None)
     parser.add_argument("--reset-onboarding", action="store_true")
@@ -88,6 +90,20 @@ def cli_mode(args, profile):
     # development uses the team's effective daily routes rather than Codex-only.
     inherit = profile == "alpha" or inherit or (profile == "development" and not demo and not args.real_cli and providers is None)
     return real, inherit
+
+
+def guard_running(profile):
+    """Each environment is a full backend (+ Vite); unbounded parallel launches exhausted host memory."""
+    limit = int(os.environ.get("AGENTCLUB_MAX_RUNNING") or profiles()[profile].get("max_running") or 0)
+    live = running_instances(profile)
+    if not limit or len(live) < limit: return
+    lines = [f"{len(live)} managed {profile} environments are already running (limit {limit}); "
+             "stop one that is no longer needed before starting another:"]
+    for record in live:
+        demo = "" if record.get("real_cli") else " --demo"
+        lines.append(f"  ./scripts/env.sh stop {profile} --checkout {record['checkout']}{demo}"
+                     f"  # since {record.get('supervisor_started_at')}")
+    raise EnvironmentError("\n".join(lines))
 
 
 def launch(args, root, profile, allocate=False):
@@ -108,13 +124,16 @@ def launch(args, root, profile, allocate=False):
             raise EnvironmentError("Alpha is not at refreshed origin/main; sync it before starting")
     if checkout_listening(root) and not alive(read_record(root, profile, real)):
         raise EnvironmentError("Checkout is serving another instance; do not develop in a running service checkout")
+    if profile == "development" and not alive(read_record(root, profile, real)):
+        guard_running(profile)
     if not (root / "backend/app/runtime_control.py").exists():
         raise EnvironmentError("Checkout does not include the managed lifecycle yet; merge PR 2 before using alpha/main features")
     record = start(root, profile, detach=args.detach,
         real=real, providers=args.providers or "codex", backend=args.backend_port, frontend=args.frontend_port,
         inherit_cli=inherit,
         allocate=allocate, install=not args.no_install, backend_only=args.backend_only, reload=args.reload,
-        open_browser=args.open and not args.no_open, reset_onboarding=args.reset_onboarding)
+        open_browser=args.open and not args.no_open, reset_onboarding=args.reset_onboarding,
+        idle_stop=args.idle_stop)
 
 
 def main(argv=None):

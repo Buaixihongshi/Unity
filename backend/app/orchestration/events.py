@@ -67,20 +67,20 @@ def record_turn_blocked(
     attempt: int,
     duration_ms: int,
     error: str,
+    failure_code: Optional[str] = None,
 ) -> None:
-    repo.add_event(
-        mission_id,
-        "turn.blocked",
-        {
-            "mission_id": mission_id,
-            "turn_id": turn_id,
-            "agent_id": agent_id,
-            "provider_id": provider_id,
-            "attempt": attempt,
-            "duration_ms": duration_ms,
-            "error": error,
-        },
-    )
+    payload = {
+        "mission_id": mission_id,
+        "turn_id": turn_id,
+        "agent_id": agent_id,
+        "provider_id": provider_id,
+        "attempt": attempt,
+        "duration_ms": duration_ms,
+        "error": error,
+    }
+    if failure_code:
+        payload["failure_code"] = failure_code
+    repo.add_event(mission_id, "turn.blocked", payload)
 
 
 def record_turn_failed(
@@ -318,6 +318,7 @@ def record_a2a_invoke(
     purpose: str,
     mode: str,
     queued_position: int,
+    callee_step_id: Optional[str] = None,
 ) -> None:
     repo.add_event(
         mission_id,
@@ -330,6 +331,7 @@ def record_a2a_invoke(
             "purpose": purpose,
             "mode": mode,
             "queued_position": queued_position,
+            **({"callee_step_id": callee_step_id} if callee_step_id is not None else {}),
         },
     )
 

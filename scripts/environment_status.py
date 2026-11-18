@@ -33,7 +33,8 @@ def get_json(port: int, path: str) -> dict | None:
             return None
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        with opener.open(f"http://127.0.0.1:{port}{path}", timeout=1) as response:
+        probe = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"X-AgentClub-Probe": "1"})
+        with opener.open(probe, timeout=1) as response:
             data = json.loads(response.read(256_000))
             return data if isinstance(data, dict) else None
     except (OSError, ValueError, urllib.error.URLError):

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { CustomAgentInput, HubSettingsAgentView } from "../types";
+import { EffortSelect, effortAfterModelChange } from "./EffortSelect";
 
 export interface RoleRouteOption {
   id: string;
@@ -14,6 +15,8 @@ interface Props {
   agent?: HubSettingsAgentView;
   routeOptions: RoleRouteOption[];
   modelSuggestions: (connectionId: string) => string[];
+  /** Effort levels for a connection and model; empty when it has no effort setting. */
+  effortChoices: (connectionId: string, model: string) => string[];
   onSubmit: (input: CustomAgentInput) => Promise<void>;
   onCancel: () => void;
 }
@@ -23,7 +26,7 @@ function splitAliases(raw: string): string[] {
 }
 
 /** Form for a user-created role: identity, duties and its own route. */
-export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, onCancel }: Props) {
+export function RoleEditor({ agent, routeOptions, modelSuggestions, effortChoices, onSubmit, onCancel }: Props) {
   const firstRoutable = routeOptions.find((option) => !option.disabled)?.id ?? routeOptions[0]?.id ?? "";
   const [displayName, setDisplayName] = useState(agent?.display_name ?? "");
   const [role, setRole] = useState(agent?.role ?? "");
@@ -33,6 +36,7 @@ export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, on
   const [primary, setPrimary] = useState(agent?.default_provider_id.value ?? firstRoutable);
   const [fallbacks, setFallbacks] = useState<string[]>(agent?.fallback_provider_ids.value ?? []);
   const [models, setModels] = useState<Record<string, string>>(agent?.provider_models?.value ?? {});
+  const [efforts, setEfforts] = useState<Record<string, string>>(agent?.provider_efforts?.value ?? {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +52,10 @@ export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, on
 
   function setModel(id: string, value: string) {
     setModels((prev) => ({ ...prev, [id]: value }));
+    setEfforts((prev) => ({
+      ...prev,
+      [id]: effortAfterModelChange(prev[id] ?? "", effortChoices(id, value.trim())),
+    }));
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -57,6 +65,10 @@ export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, on
     for (const id of routed) {
       const model = models[id]?.trim();
       if (model) providerModels[id] = model;
+    }
+    const providerEfforts: Record<string, string> = {};
+    for (const id of routed) {
+      if (efforts[id]) providerEfforts[id] = efforts[id];
     }
     setBusy(true);
     setError(null);
@@ -70,6 +82,7 @@ export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, on
         default_provider_id: primary,
         fallback_provider_ids: fallbacks.filter((id) => id !== primary),
         provider_models: providerModels,
+        provider_efforts: providerEfforts,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存角色失败");
@@ -83,7 +96,7 @@ export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, on
     const listId = suggestions.length > 0 ? `${formId}-models-${id}` : undefined;
     const missing = Boolean(option?.requiresModel) && !models[id]?.trim();
     return (
-      <>
+      <div className="model-effort-group">
         <input
           type="text"
           className={`custom-input${missing ? " is-invalid" : ""}`}
@@ -99,7 +112,13 @@ export function RoleEditor({ agent, routeOptions, modelSuggestions, onSubmit, on
             {suggestions.map((model) => <option key={model} value={model} />)}
           </datalist>
         )}
-      </>
+        <EffortSelect
+          label={`${option?.label ?? id} 推理强度`}
+          value={efforts[id] ?? ""}
+          choices={effortChoices(id, models[id]?.trim() ?? "")}
+          onChange={(value) => setEfforts((prev) => ({ ...prev, [id]: value }))}
+        />
+      </div>
     );
   }
 

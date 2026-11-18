@@ -176,9 +176,10 @@ export function MissionComposer(props: {
       return;
     }
 
+    // 回车只换行，避免误发；⌘/Ctrl + Enter 才发送。
     if (
       event.key === "Enter" &&
-      !event.shiftKey &&
+      (event.metaKey || event.ctrlKey) &&
       props.value.trim() &&
       !props.busy &&
       !props.disabled &&
@@ -223,7 +224,7 @@ export function MissionComposer(props: {
       ) : null}
       {props.onStop ? (
         <div className="composer-notice">
-          <span>{props.stopping ? "正在停止当前运行…" : "补充消息将在当前回合结束后处理。"}</span>
+          <span>{props.stopping ? "正在停止当前运行…" : "正在回复，可以先写好下一条，结束或停止后再发送。"}</span>
           <button type="button" className="composer-notice-action" onClick={props.onStop}
             disabled={props.disabled || props.stopping || props.busy}>
             {props.stopping ? "停止中…" : "停止"}
@@ -247,7 +248,7 @@ export function MissionComposer(props: {
           disabled={props.disabled}
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={props.disabled ? "归档会话只读；恢复后可继续对话" : props.placeholder ?? (mentionsEnabled ? "说说你的想法，@ 选择伙伴 · Enter 发送" : "聊点什么，Enter 发送 · Shift + Enter 换行")}
+          placeholder={props.disabled ? "归档会话只读；恢复后可继续对话" : props.placeholder ?? (mentionsEnabled ? "说说你的想法，@ 选择伙伴 · ⌘/Ctrl + Enter 发送" : "聊点什么，⌘/Ctrl + Enter 发送")}
           rows={2}
           role="combobox"
           aria-expanded={menu !== null}

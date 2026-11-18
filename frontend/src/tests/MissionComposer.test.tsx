@@ -171,40 +171,42 @@ describe("MissionComposer mention autocomplete", () => {
     expect(onSubmit).toHaveBeenCalled();
   });
 
-  it("submits with Enter when mention menu is closed", async () => {
+  it("keeps plain Enter as newline input instead of submitting", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(<Harness initialValue="hello" onSubmit={onSubmit} />);
 
     screen.getByLabelText("消息输入").focus();
     await user.keyboard("{Enter}");
-    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect((screen.getByLabelText("消息输入") as HTMLTextAreaElement).value.match(/\n/g)).toHaveLength(2);
   });
 
-  it("keeps Shift+Enter as newline input", async () => {
+  it.each(["Meta", "Control"])("submits with %s+Enter when mention menu is closed", async (modifier) => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(<Harness initialValue="hello" onSubmit={onSubmit} />);
 
     screen.getByLabelText("消息输入").focus();
-    await user.keyboard("{Shift>}{Enter}{/Shift}");
-    expect(onSubmit).not.toHaveBeenCalled();
+    await user.keyboard(`{${modifier}>}{Enter}{/${modifier}}`);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it("stops independently of sending and explains when a supplement takes effect", async () => {
+  it("stops independently of sending and keeps the draft for later", async () => {
     const onStop = vi.fn(), onSubmit = vi.fn();
     const props = { value: "补充信息", busy: false, hasActiveMission: true,
-      onChange: vi.fn(), onSubmit, onStop, submitLabel: "发送补充" };
+      onChange: vi.fn(), onSubmit, onStop, submitLabel: "运行中…" };
     const { rerender } = render(<MissionComposer {...props} />);
-    expect(screen.getByText("补充消息将在当前回合结束后处理。")).toBeVisible();
+    expect(screen.getByText("正在回复，可以先写好下一条，结束或停止后再发送。")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "停止" }));
     expect(onStop).toHaveBeenCalledOnce();
     expect(onSubmit).not.toHaveBeenCalled();
     rerender(<MissionComposer {...props} stopping submitDisabled />);
     expect(screen.getByRole("button", { name: "停止中…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "发送补充" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行中…" })).toBeDisabled();
     expect(screen.getByLabelText("消息输入")).not.toBeDisabled();
-    await userEvent.type(screen.getByLabelText("消息输入"), "{Enter}");
+    await userEvent.type(screen.getByLabelText("消息输入"), "{Control>}{Enter}{/Control}");
     expect(onSubmit).not.toHaveBeenCalled();
   });
 

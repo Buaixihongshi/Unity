@@ -17,12 +17,12 @@ from backend.app.orchestration.runner import MissionRunner
 from backend.app.storage.repository import Repository
 
 
-def seed(repository, *, conversation_id="c", mission_id="m"):
+def seed(repository, *, conversation_id="c", mission_id="m", status=MissionStatus.COMPLETED):
     if conversation_id and not repository.get_conversation(conversation_id):
         repository.create_conversation(Conversation(id=conversation_id, title="讨论"))
     mission = Mission(
         id=mission_id, title="讨论", goal="设计并实现系统，包含前端、后端和测试",
-        conversation_id=conversation_id, status=MissionStatus.COMPLETED,
+        conversation_id=conversation_id, status=status,
     )
     repository.create_mission(mission)
     return mission
@@ -87,11 +87,13 @@ def test_legacy_interrupt_survives_next_mission_with_stable_identity(repository,
 
 
 def test_new_interrupt_is_atomic_and_appears_once_in_api_sse_and_history(repository, temp_settings):
-    mission = seed(repository)
+    mission = seed(repository, status=MissionStatus.RUNNING)
     client = TestClient(create_app(temp_settings))
     for _ in range(2):  # Identical text is two distinct submissions.
         response = client.post(f"/api/missions/{mission.id}/interruptions", json={"content": "限制条件", "target_agent_id": "wangye"})
         assert response.status_code == 202
+    # A finished run lets the SSE stream below close after its snapshots.
+    repository.update_mission(mission.model_copy(update={"status": MissionStatus.COMPLETED}))
     events = repository.list_events_after(mission.id, 0)
     interrupts = [e for e in events if e.event_type == "interrupt"]
     stored = repository.list_messages(mission.id)
@@ -112,7 +114,7 @@ def test_new_interrupt_is_atomic_and_appears_once_in_api_sse_and_history(reposit
 
 
 def test_interrupt_rolls_back_message_and_events_on_failure(repository, temp_settings, monkeypatch):
-    mission = seed(repository)
+    mission = seed(repository, status=MissionStatus.RUNNING)
     original = type(repository).add_event
 
     def fail(self, mission_id, event_type, payload, db=None):

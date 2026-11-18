@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from backend.app.adapters.base import CLIAdapter, TurnOutcome
+from backend.app.adapters.failure_text import diagnostic_detail
 from backend.app.domain.models import TurnStatus
 from backend.app.orchestration import interruption
 from backend.app.mcp.tools import MCPToolError, MCPTools
@@ -78,10 +79,8 @@ def build_failure_summary(
         parts.append("timeout after {t}s".format(t=timeout))
     elif exit_code is not None:
         parts.append("exit_code={c}".format(c=exit_code))
-    detail = stderr_snippet or stdout_snippet
+    detail = diagnostic_detail(stderr_snippet, stdout_snippet)
     if detail:
-        if len(detail) > 200:
-            detail = detail[:200] + "…"
         parts.append(detail)
     return " ".join(parts)
 

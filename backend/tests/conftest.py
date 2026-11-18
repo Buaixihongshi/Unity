@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,14 @@ def _reset_agent_registry():
     yield
     from backend.app.domain.agent_registry import reset_agent_registry
     reset_agent_registry()
+
+
+@pytest.fixture(autouse=True)
+def _no_host_instance_env(monkeypatch):
+    # Agent sessions inherit the daily backend's YIREN_* paths; tests resolve
+    # state from their own fixtures so they never write into that instance (#88).
+    for name in [name for name in os.environ if name.startswith("YIREN_")]:
+        monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)

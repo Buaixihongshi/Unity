@@ -16,32 +16,19 @@ def fake_home(tmp_path, monkeypatch):
 SPEC = {"command": "py", "args": ["-m", "backend.app.mcp.server"], "env": {"X": "1"}}
 
 
-def _global_text(fake_home):
-    return (fake_home / ".gemini" / "config" / "mcp_config.json").read_text(encoding="utf-8")
-
-
-def test_guard_injects_yiren_hub_during_block_and_removes_when_absent(fake_home):
-    # No pre-existing global config.
-    assert not agc.global_mcp_config_path().exists()
-    with agc.guarded_global_mcp_config(SPEC):
-        injected = json.loads(_global_text(fake_home))
-        assert injected == {"mcpServers": {"yiren_hub": SPEC}}
-    # Original did not exist -> file removed after the block.
-    assert not agc.global_mcp_config_path().exists()
-    assert not agc._sentinel_path().exists()
-
-
-def test_guard_restores_pre_existing_content_exactly(fake_home):
-    cfg = agc.global_mcp_config_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    original = '{"mcpServers": {"user_server": {"command": "x"}}}\n'
-    cfg.write_text(original, encoding="utf-8")
-    with agc.guarded_global_mcp_config(SPEC):
-        injected = json.loads(_global_text(fake_home))
-        assert "user_server" not in injected["mcpServers"]  # user server hidden during run
-        assert "yiren_hub" in injected["mcpServers"]
-    assert cfg.read_text(encoding="utf-8") == original  # byte-exact restore
-    assert not agc._sentinel_path().exists()
+def test_workspace_plugin_registers_only_this_workspace(fake_home, tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = agc.write_workspace_plugin(workspace, SPEC)
+    # agy reads {"entries": [...]}; a bare list silently fails to parse.
+    entries = json.loads((workspace / ".agents" / "plugins.json").read_text())["entries"]
+    assert entries == [{"path": str(workspace / ".unity-plugins"), "include_only": [agc.PLUGIN_NAME]}]
+    plugin = Path(entries[0]["path"]) / agc.PLUGIN_NAME
+    assert json.loads((plugin / ".antigravity-plugin" / "plugin.json").read_text())["name"] == agc.PLUGIN_NAME
+    assert config == plugin / "mcp_config.json"
+    assert json.loads(config.read_text()) == {"mcpServers": {agc.PLUGIN_SERVER: SPEC}}
+    assert agc.SERVER_NAME == "unity_hub"  # agy's <plugin>_<server>; must not collide with legacy yiren_hub
+    assert not (fake_home / ".gemini").exists()
 
 
 def test_recover_if_crashed_restores_from_sentinel(fake_home):
@@ -74,26 +61,6 @@ def test_recover_if_crashed_restores_preexisting_content(fake_home):
     agc.recover_antigravity_global_config()
     assert cfg.read_text(encoding="utf-8") == original
     assert not agc._sentinel_path().exists()
-
-
-def test_guard_restores_on_exception_inside_block(fake_home):
-    cfg = agc.global_mcp_config_path()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    original = '{"mcpServers": {"user_server": {}}}\n'
-    cfg.write_text(original, encoding="utf-8")
-    with pytest.raises(RuntimeError):
-        with agc.guarded_global_mcp_config(SPEC):
-            raise RuntimeError("simulated caller failure")
-    assert cfg.read_text(encoding="utf-8") == original
-    assert not agc._sentinel_path().exists()
-
-
-def test_sequential_guards_do_not_deadlock(fake_home):
-    with agc.guarded_global_mcp_config(SPEC):
-        pass
-    with agc.guarded_global_mcp_config(SPEC):
-        pass
-    assert not agc.global_mcp_config_path().exists()
 
 
 def test_recover_creates_no_lock_file_when_no_sentinel(fake_home):
@@ -208,3 +175,70 @@ def test_new_login_failure_after_success_is_reported(fake_home):
     _write_log(fake_home, "cli-expired.log",
                "authenticated via keyring\nnot logged into Antigravity", mtime=now)
     assert "not authenticated" in agc.read_agy_log_hint(now)
+
+
+# -- coexistence with older Unity builds --------------------------------------
+
+def _legacy_turn(release_after, injected):
+    """What an older build does per turn: exclusive lock, inject yiren_hub, restore."""
+    import threading
+
+    def run():
+        with agc._flock():
+            cfg = agc.global_mcp_config_path()
+            agc._sentinel_path().write_text(json.dumps({"existed": False, "content": None}))
+            cfg.write_text(json.dumps({"mcpServers": {"yiren_hub": {"command": "legacy"}}}))
+            injected.set()
+            import time
+            time.sleep(release_after)
+            cfg.unlink()
+            agc._sentinel_path().unlink()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread
+
+
+def test_new_runs_share_the_lock_and_shut_out_older_builds(fake_home):
+    with agc.legacy_config_excluded():
+        with agc.legacy_config_excluded(timeout=0.2):  # another new instance
+            pass
+        with pytest.raises(TimeoutError):
+            with agc._flock(timeout=0.2):  # an older build's per-turn lock
+                pass
+
+
+def test_agy_starts_only_after_older_build_restored_global_config(fake_home):
+    import threading
+    injected = threading.Event()
+    waits = []
+    legacy = _legacy_turn(0.3, injected)
+    injected.wait(2)
+    with agc.legacy_config_excluded(timeout=3, on_wait=lambda: waits.append(1)):
+        # Had agy started now it would only find its own plugin server.
+        assert not agc.global_mcp_config_path().exists()
+    legacy.join(2)
+    assert waits == [1]
+
+
+def test_crash_leftover_is_restored_before_agy_starts(fake_home):
+    cfg = agc.global_mcp_config_path()
+    cfg.parent.mkdir(parents=True)
+    agc._sentinel_path().write_text(json.dumps({"existed": False, "content": None}))
+    cfg.write_text('{"mcpServers": {"yiren_hub": {"command": "dead"}}}')
+    with agc.legacy_config_excluded(timeout=1):
+        assert not cfg.exists() and not agc._sentinel_path().exists()
+
+
+def test_stop_while_waiting_for_older_build(fake_home):
+    import threading
+    import time
+    injected = threading.Event()
+    legacy = _legacy_turn(1.5, injected)
+    injected.wait(2)
+    started = time.monotonic()
+    with pytest.raises(agc.WaitCancelled):
+        with agc.legacy_config_excluded(cancelled=lambda: True):
+            pass
+    assert time.monotonic() - started < 0.5
+    legacy.join(3)

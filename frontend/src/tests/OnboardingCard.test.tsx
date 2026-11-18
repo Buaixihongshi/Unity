@@ -298,4 +298,21 @@ describe("OnboardingCard", () => {
 
     expect(onRetryHealth).toHaveBeenCalledOnce();
   });
+
+  it("renders the mobius animation waiting state while health is loading", () => {
+    const { container } = render(
+      <OnboardingCard
+        {...props({
+          health: null,
+          healthLoading: true,
+          healthError: null,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("正在确认 Unity 状态…")).toBeInTheDocument();
+    expect(screen.getByText("马上就好，我们在检查聊天室和本机可用的 CLI。")).toBeInTheDocument();
+    expect(container.querySelector(".onboarding-mobius-wrap")).toBeInTheDocument();
+    expect(container.querySelector(".mobius-track-loop")).toBeInTheDocument();
+  });
 });
