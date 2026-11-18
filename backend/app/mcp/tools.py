@@ -921,6 +921,7 @@ class MCPTools:
                 purpose.strip(),
                 mode,
                 queued_position,
+                callee_step_id=step.step_id,
             )
             remaining = max(0, self.max_a2a_invocations - used - 1)
             record_tool_result(

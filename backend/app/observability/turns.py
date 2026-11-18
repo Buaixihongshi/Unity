@@ -138,6 +138,9 @@ class Turn:
     cost_source: Optional[str] = None
     checks: list[dict] = field(default_factory=list)
 
+    a2a_waits: list[tuple] = field(default_factory=list)
+    a2a_failed_targets: list[str] = field(default_factory=list)
+
     # ---- derived facts the checks read -------------------------------------
     @property
     def tools(self) -> list[Step]:
@@ -390,6 +393,7 @@ def build_turns(
     turn whose start was lost) still gets a turn: losing the start must not
     hide the work that followed.
     """
+    events, messages = sorted(events, key=_sort_key), list(messages)
     turns: dict[str, Turn] = {}
     order: list[str] = []
     open_tools: dict[str, dict[str, list[Step]]] = {}
@@ -484,4 +488,6 @@ def build_turns(
             if start and end:
                 turn.duration_ms = max(int((end - start).total_seconds() * 1000), 0)
         turn.cost_usd, turn.cost_source = pricing.turn_cost(turn.provider_id, turn.usage)
+    from backend.app.observability.a2a import attach_wait_evidence
+    attach_wait_evidence(events, messages, mission, built)
     return built

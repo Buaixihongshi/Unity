@@ -254,6 +254,9 @@ def read_artifact_content(settings: Settings, mission_id: str, relative_path: st
     }
 
 
+_TURN_LIFECYCLE_EVENTS = frozenset({"turn.started", "turn.completed", "turn.blocked", "turn.failed"})
+
+
 def _derive_turns(db_events) -> list[dict[str, object]]:
     """Derive turn records from turn.* events, grouped by turn_id.
 
@@ -284,6 +287,10 @@ def _derive_turns(db_events) -> list[dict[str, object]]:
             }
 
         turn = turns_by_id[turn_id]
+        # Usage, warnings and progress notes carry no attempt number; counting
+        # them would add a phantom "started" attempt to the turn.
+        if event.event_type not in _TURN_LIFECYCLE_EVENTS:
+            continue
         attempt_num = payload.get("attempt", 1)
         provider_id = payload.get("provider_id", "")
         attempt_key = (attempt_num, provider_id)
@@ -311,7 +318,13 @@ def _derive_turns(db_events) -> list[dict[str, object]]:
         if payload.get("summary"):
             attempt_rec["summary"] = payload["summary"]
 
-        if event.event_type == "turn.completed":
+        if event.event_type == "turn.started":
+            # A fallback attempt restarts a blocked turn; the chat keeps
+            # showing its in-flight bubble only while the turn is "started".
+            if turn["status"] != "completed":
+                turn["status"] = "started"
+                turn["provider_id"] = payload.get("provider_id")
+        elif event.event_type == "turn.completed":
             turn["status"] = "completed"
             turn["provider_id"] = payload.get("provider_id")
             turn["duration_ms"] = payload.get("duration_ms")
