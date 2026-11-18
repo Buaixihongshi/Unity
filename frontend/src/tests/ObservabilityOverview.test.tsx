@@ -108,6 +108,9 @@ describe("ObservabilityOverview", () => {
     fireEvent.click(within(table).getByRole("button", { name: /查看 chulan 的回合细节/ }));
     expect(await screen.findByText(/a\.py/)).toBeInTheDocument();
     expect(screen.getByText(/command/)).toBeInTheDocument();
+    expect(screen.getByText("Mission ID")).toBeInTheDocument();
+    expect(screen.getByText("m_1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制 Mission ID" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByText("最近回合")).toBeInTheDocument();
