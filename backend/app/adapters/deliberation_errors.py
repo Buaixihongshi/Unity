@@ -1,8 +1,12 @@
 """Allowlisted public diagnostics; provider output stays private until release."""
 import re
 
+from backend.app.adapters.failure_text import limit_failure_code
+
 
 MESSAGES = {
+    'usage_limit': '账号用量上限，请等待上游重置或检查角色路由。',
+    'rate_limit': '请求受到限流，请稍后重试或检查角色路由。',
     'configuration': 'API 配置无效或凭据已更新，请检查连接与模型。',
     'endpoint_policy': 'API 出站端点未通过网络策略校验。',
     'tls_verification': 'API TLS 证书校验失败。',
@@ -37,6 +41,9 @@ _NETWORK = re.compile(
 
 def failure_code(text, *, exit_code=None):
     value = str(text).lower()
+    limit = limit_failure_code(value)
+    if limit:
+        return limit
     # Prefer the fatal startup error over secondary network warnings.
     if 'failed to synchronize managed preferences' in value:
         return 'managed_preferences'

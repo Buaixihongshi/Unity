@@ -38,7 +38,7 @@ STATUS_RUNNING = "running"
 ENVIRONMENT_FAILURES = frozenset({
     "network", "dns", "dns_busy", "upstream", "tls_verification", "endpoint_policy",
     "authentication", "configuration", "network_policy", "managed_preferences",
-    "filesystem_permission", "invalid_arguments", "budget_exhausted",
+    "filesystem_permission", "invalid_arguments", "budget_exhausted", "usage_limit", "rate_limit",
 })
 USER_FAILURES = frozenset({"stopped"})
 

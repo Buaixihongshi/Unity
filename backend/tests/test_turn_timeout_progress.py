@@ -99,12 +99,14 @@ def test_idle_timeout_leaves_host_progress_note_without_agent_or_system_message(
     assert not [m for m in repository.list_messages(mission.id) if m.role == MessageRole.AGENT]
 
 
-def test_non_timeout_block_records_no_progress_note(repository, temp_settings):
+def test_non_timeout_block_records_reason_and_activity(repository, temp_settings):
     outcome = TurnOutcome(status=TurnStatus.BLOCKED, summary="not logged in", failure_code="authentication")
     mission = _run(repository, temp_settings, outcome)
-    assert _notes(repository, mission.id) == []
+    assert _notes(repository, mission.id)[0].payload["reason"] == "authentication"
     failure = build_mission_detail(repository, temp_settings, mission.id)["failure_events"][0]
-    assert "host_progress" not in failure["metadata"]
+    progress = failure["metadata"]["host_progress"]
+    assert progress["reason"] == "authentication" and progress["error"] == "not logged in"
+    assert progress["tool_calls"] == 4 and progress["artifacts"] == ["demo/index.html"]
     assert failure["content"] == "王也本轮未完成，未发布回复。"
 
 
@@ -119,7 +121,10 @@ def test_snapshot_from_earlier_fallback_attempt_is_not_reused(repository, temp_s
     repository.add_event("m_fb", "turn.blocked", {**base, "provider_id": "codex", "attempt": 2,
                                                   "error": "not logged in"})
     failure = build_mission_detail(repository, temp_settings, "m_fb")["failure_events"][0]
-    assert "host_progress" not in failure["metadata"]
+    progress = failure["metadata"]["host_progress"]
+    assert progress["reason"] == "authentication" and progress["error"] == "not logged in"
+    assert progress["tool_calls"] == 0 and progress["artifacts"] == []
+    assert "超时" not in failure["content"]
 
 
 def test_a2a_invitee_timeout_note_survives_until_mission_ends(repository, temp_settings):

@@ -174,7 +174,7 @@ export interface ThreadEventMetadata {
   revised?: boolean;
 }
 
-/** Host-recorded snapshot of a timed-out turn; never an agent message. */
+/** Host-recorded snapshot of a failed or blocked turn; never an agent message. */
 export interface HostProgress {
   source: "host";
   reason: string;

@@ -10,7 +10,10 @@ from backend.app.domain.agent_registry import get_agent_registry
 from backend.app.domain.models import Message, Mission, format_iso_utc as _iso_utc
 from backend.app.orchestration.interruption import INTERRUPTED_EVENT, REASON_LABELS
 from backend.app.orchestration.live_progress import get_live_progress_registry
-from backend.app.orchestration.turn_progress import HOST_PROGRESS_FIELDS, PROGRESS_NOTE_EVENT
+from backend.app.orchestration.turn_progress import (
+    PROGRESS_NOTE_EVENT, attempt_events, failure_reason, project_host_progress,
+    summarize_turn_progress, timeout_reason,
+)
 from backend.app.settings import Settings
 from backend.app.storage.repository import Repository
 from backend.app import extension_points
@@ -399,7 +402,7 @@ def _derive_failure_events(mission: Mission, db_events) -> list[dict[str, object
         if event.event_type == INTERRUPTED_EVENT:
             interrupted = event.payload
         if event.event_type == PROGRESS_NOTE_EVENT and event.payload.get("source") == "host":
-            progress_notes[(event.payload.get("turn_id"), event.payload.get("attempt"))] = event.payload
+            progress_notes[(event.payload.get("turn_id"), event.payload.get("attempt"), event.payload.get("provider_id"))] = event.payload
         if event.event_type == "message" and event.payload.get("created_at"):
             last_message_at = datetime.fromisoformat(event.payload["created_at"].replace("Z", "+00:00"))
         if event.event_type == "artifact" and event.payload.get("saved_at"):
@@ -419,8 +422,18 @@ def _derive_failure_events(mission: Mission, db_events) -> list[dict[str, object
         label = _agent_metadata(agent_id).get("persona_label", agent_id or "伙伴")
         # Only the snapshot of this same attempt: an earlier timed-out fallback
         # attempt must not explain a later block with another cause.
-        note = progress_notes.get((turn_id, payload.get("attempt")))
-        timed_out = note is not None or "timeout" in error.lower() or "timed out" in error.lower() or "超时" in error
+        note = progress_notes.get((turn_id, payload.get("attempt"), provider_id))
+        reason = failure_reason(payload.get("failure_code") or (note or {}).get("reason"), error)
+        timed_out = timeout_reason(reason, error) is not None
+        if note is None:
+            note = {
+                "source": "host", "reason": reason, "error": error,
+                "stopped_at": _iso_utc(event.created_at),
+                **summarize_turn_progress(attempt_events(db_events, event), turn_id,
+                                          stopped_at=event.created_at),
+            }
+        else:
+            note = {**note, "reason": reason, "error": error or note.get("error") or ""}
         published = any(e.event_type == "message" and e.payload.get("turn_id") == turn_id
                         and e.payload.get("role") == "agent" for e in db_events)
         if interrupted and interrupted.get("turn_id") == turn_id:
@@ -441,7 +454,7 @@ def _derive_failure_events(mission: Mission, db_events) -> list[dict[str, object
         created = max(created, last_message_at)
         metadata = _event_metadata(provider_id, agent_id)
         if note is not None:
-            metadata["host_progress"] = {key: note.get(key) for key in HOST_PROGRESS_FIELDS}
+            metadata["host_progress"] = project_host_progress(note)
         failures.append({
             "id": f"failure:{mission.id}:{turn_id}", "mission_id": mission.id,
             "event_type": "turn.failure", "role": "system", "content": text,

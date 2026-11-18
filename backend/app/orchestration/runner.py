@@ -42,7 +42,7 @@ from backend.app.orchestration import interruption, revision
 from backend.app.orchestration.context import build_artifact_index, build_conversation_context
 from backend.app.orchestration.speaker import WorkflowStep, resume_purpose
 from backend.app.orchestration.strategies import OrchestrationPlan, plan_orchestration
-from backend.app.orchestration.turn_progress import record_turn_progress_note, timeout_reason
+from backend.app.orchestration.turn_progress import record_turn_progress_note, failure_reason
 from backend.app.settings import Settings
 from backend.app.storage.repository import Repository
 
@@ -793,10 +793,13 @@ class MissionRunner:
                     duration_ms,
                     str(exc),
                 )
-                return TurnOutcome(
-                    status=TurnStatus.FAILED,
-                    summary="Adapter failed: {error}".format(error=exc),
+                error = "Adapter failed: {error}".format(error=exc)
+                record_turn_progress_note(
+                    self.repository, mission.id, turn_id=turn_id, agent_id=agent_id,
+                    provider_id=provider_id, attempt=attempt, reason=failure_reason(None, error),
+                    error=error, events=self.repository.list_events_after(mission.id, 0)[event_offset:],
                 )
+                return TurnOutcome(status=TurnStatus.FAILED, summary=error)
 
             duration_ms = int((time.monotonic() - t0) * 1000)
             outcome = _normalize_outcome(outcome)
@@ -826,13 +829,12 @@ class MissionRunner:
                 failure_code=outcome.failure_code,
             )
             attempt_events = self.repository.list_events_after(mission.id, 0)[event_offset:]
-            reason = timeout_reason(outcome.failure_code, outcome.summary)
-            if reason:
-                record_turn_progress_note(
-                    self.repository, mission.id, turn_id=turn_id, agent_id=agent_id,
-                    provider_id=provider_id, attempt=attempt, reason=reason,
-                    error=outcome.summary or "", events=attempt_events,
-                )
+            record_turn_progress_note(
+                self.repository, mission.id, turn_id=turn_id, agent_id=agent_id,
+                provider_id=provider_id, attempt=attempt,
+                reason=failure_reason(outcome.failure_code, outcome.summary),
+                error=outcome.summary or "", events=attempt_events,
+            )
             from backend.app.orchestration.live_progress import get_live_progress_registry
             if (not may_retry(outcome, attempt_events)
                     or get_live_progress_registry().get_partial_text(mission.id, turn_id)):
