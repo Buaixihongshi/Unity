@@ -50,13 +50,24 @@ def load_exemptions(path: Path) -> list[dict]:
 def run_npm_audit(root: Path = ROOT) -> dict:
     proc = subprocess.run(["npm", "--prefix", "frontend", "audit", "--json"],
                           cwd=root, capture_output=True, text=True)
+    detail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
+    # npm audit exits 1 when it reports vulnerabilities; any other exit code
+    # is an operational failure (network, broken install) and must fail the
+    # gate instead of silently passing as "no findings" (#194).
+    if proc.returncode not in (0, 1):
+        raise AuditGateError(f"npm audit exited {proc.returncode}, expected 0 or 1: {detail}")
     try:
         audit = json.loads(proc.stdout or "")
     except json.JSONDecodeError as exc:
-        detail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
         raise AuditGateError(f"npm audit produced no JSON (exit {proc.returncode}): {detail}") from exc
-    if isinstance(audit, dict) and isinstance(audit.get("error"), dict):
+    if not isinstance(audit, dict):
+        raise AuditGateError(f"npm audit JSON is not an object: {detail}")
+    if isinstance(audit.get("error"), dict):
         raise AuditGateError(f"npm audit error: {audit['error'].get('summary') or audit['error']}")
+    for key in ("vulnerabilities", "metadata"):
+        if not isinstance(audit.get(key), dict):
+            raise AuditGateError(f"npm audit output lacks a '{key}' object; "
+                                 f"refusing to pass on unusable audit data: {detail}")
     return audit
 
 
@@ -71,20 +82,27 @@ def evaluate(audit: dict, exemptions: list[dict]) -> dict:
     A package finding is exempted only when every root advisory reachable
     through its `via` chains is explicitly exempted; any non-exempted root
     advisory keeps the package (and everything depending on it) a finding.
+    A finding that resolves to no root advisory at all (empty via, or a via
+    cycle without advisories) is kept as unresolved and fails the gate.
+    Malformed findings or via entries raise AuditGateError instead of pass.
     """
     vulns = audit.get("vulnerabilities") or {}
     direct: dict[str, list[tuple[str, str]]] = {}
     edges: dict[str, list[str]] = {}
     for name, finding in vulns.items():
+        if not isinstance(finding, dict) or not isinstance(finding.get("via"), list):
+            raise AuditGateError(f"finding for {name} is malformed: expected an object with a 'via' list")
         advisories: list[tuple[str, str]] = []
         via_packages: list[str] = []
-        for via in finding.get("via") or []:
+        for via in finding["via"]:
             if isinstance(via, dict):
                 advisories.append((_advisory_id(via), str(via.get("title") or "")))
-            elif str(via) in vulns:
-                via_packages.append(str(via))
-            else:
+            elif isinstance(via, str) and via in vulns:
+                via_packages.append(via)
+            elif isinstance(via, str):
                 advisories.append((UNRESOLVED, f"via {via} (package missing from audit output)"))
+            else:
+                raise AuditGateError(f"finding for {name} has a non-string/dict via entry: {via!r}")
         direct[name] = advisories
         edges[name] = via_packages
 
@@ -107,6 +125,12 @@ def evaluate(audit: dict, exemptions: list[dict]) -> dict:
     used: set[str] = set()
     for name in vulns:
         package_roots = roots(name)
+        if not package_roots:
+            # Empty via, or a via cycle carrying no advisory anywhere: nothing
+            # was actually verified for this package, so it fails closed (#194).
+            remaining.append({"package": name, "advisories": [
+                f"{UNRESOLVED} (no root advisory resolved from its via chain)"]})
+            continue
         covered = sorted({ident for ident, _ in package_roots if ident in exempt_ids})
         used.update(covered)
         if covered:

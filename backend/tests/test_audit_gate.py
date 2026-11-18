@@ -8,6 +8,7 @@ that flips one of these labels must do it on purpose.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -135,3 +136,70 @@ def test_main_fails_when_npm_reports_an_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(gate, "run_npm_audit", broken_npm)
     assert gate.main(["--exemptions", write_exemptions(tmp_path, exemption())]) == 1
     assert "ENOTFOUND" in capsys.readouterr().out
+
+
+# --- fail-closed regressions for #194: unusable audit data must never pass ---
+
+
+def fake_npm(stdout: str, returncode: int, stderr: str = ""):
+    """CompletedProcess stand-in; tests below mock subprocess.run itself (#194)."""
+    return subprocess.CompletedProcess(args=["npm", "audit"], returncode=returncode,
+                                       stdout=stdout, stderr=stderr)
+
+
+def test_main_fails_on_operational_npm_exit_code(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm("{}", 2, "npm failed"))
+    assert gate.main(["--exemptions", write_exemptions(tmp_path, [])]) == 1
+    out = capsys.readouterr().out
+    assert "exited 2" in out and "npm failed" in out
+
+
+def test_main_fails_on_json_without_audit_schema(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm("{}", 0))
+    assert gate.main(["--exemptions", write_exemptions(tmp_path, exemption())]) == 1
+    assert "vulnerabilities" in capsys.readouterr().out
+
+
+def test_main_fails_on_rootless_finding_under_real_default_exemptions(monkeypatch, capsys):
+    # Reproduction of #194 case 1: the repo's real exemption list stays in
+    # place, yet a critical finding with an empty via chain must fail.
+    audit = json.loads(json.dumps(PICOMATCH_186))
+    audit["vulnerabilities"]["unknown"] = {"severity": "critical", "via": []}
+    audit["metadata"]["vulnerabilities"]["total"] += 1
+    monkeypatch.setattr(gate, "run_npm_audit", lambda: audit)
+    assert gate.main([]) == 1
+    out = capsys.readouterr().out
+    assert "unknown" in out and gate.UNRESOLVED in out
+
+
+def test_via_cycle_without_advisories_fails_closed(tmp_path, monkeypatch, capsys):
+    audit = npm_audit_shape(advisories={}, via={"a": ["b"], "b": ["a"]})
+    monkeypatch.setattr(gate, "run_npm_audit", lambda: audit)
+    assert gate.main(["--exemptions", write_exemptions(tmp_path, exemption())]) == 1
+    out = capsys.readouterr().out
+    assert "a" in out and "b" in out and gate.UNRESOLVED in out
+
+
+def test_evaluate_keeps_rootless_and_cyclic_findings_uncovered():
+    audit = npm_audit_shape(advisories={}, via={"a": ["b"], "b": ["a"]})
+    audit["vulnerabilities"]["lonely"] = {"severity": "critical", "via": []}
+    verdict = gate.evaluate(audit, exemption())
+    assert sorted(f["package"] for f in verdict["remaining"]) == ["a", "b", "lonely"]
+    assert all(gate.UNRESOLVED in advisory
+               for finding in verdict["remaining"] for advisory in finding["advisories"])
+
+
+def test_malformed_finding_shape_is_rejected():
+    audit = npm_audit_shape({}, {})
+    audit["vulnerabilities"]["weird"] = {"severity": "high", "via": "not-a-list"}
+    with pytest.raises(gate.AuditGateError, match="weird"):
+        gate.evaluate(audit, [])
+
+
+def test_non_string_via_entry_is_rejected():
+    audit = npm_audit_shape({}, {})
+    audit["vulnerabilities"]["weird"] = {"severity": "high", "via": [42]}
+    with pytest.raises(gate.AuditGateError, match="weird"):
+        gate.evaluate(audit, [])
