@@ -252,6 +252,7 @@ def test_runner_wait_reply_resumes_sender_with_reply(repository, temp_settings):
 
     chulan_prompts = adapter.prompt_log.get("chulan", [])
     assert len(chulan_prompts) == 2
+    assert _wait_scores(repository, mission.id)[0]["value"] == 1
     assert "档案里没有这个条目" in chulan_prompts[1]
     assert "回复" in chulan_prompts[1]
 
@@ -322,6 +323,7 @@ def test_runner_wait_reply_interrupt_clears_pending_replies(repository, temp_set
     origins = {s["origin"] for s in steps}
     assert "a2a" in origins
     assert "a2a_resume" in origins
+    assert _wait_scores(repository, mission.id)[0]["value"] == 1
 
 
 def test_runner_wait_reply_resume_counts_against_max_turns(repository, temp_settings):
@@ -499,3 +501,63 @@ def _a2a_scenario_registry():
     # make that arrangement explicit rather than relying on default personas.
     registry = AgentRegistry.builtin()
     return AgentRegistry([registry.require(agent_id) for agent_id in ("chulan", "wangye", "baobao")])
+
+
+def _wait_scores(repository, mission_id):
+    from backend.app.observability.service import collect_turns
+    turns = collect_turns(repository, mission_id=mission_id)
+    return [c for t in turns for c in t.checks if c['name'] == 'a2a_wait_closed' and c['value'] is not None]
+
+
+def test_wait_reply_repeated_partner_keeps_second_reply_separate(repository, temp_settings):
+    mission = Mission(id='m_wr_repeat', title='Repeat', goal='g', target_agent_id='chulan')
+    repository.create_mission(mission)
+    temp_settings.max_turns, temp_settings.max_a2a_invocations = 1, 4
+    ask = {'target_agent_id': 'baobao', 'purpose': '查资料'}
+    adapter = WaitReplyTestAdapter({
+        'chulan': [{'invoke_wait_reply': ask}, {'invoke_wait_reply': ask}, {'text': '完成'}],
+        'baobao': [{'text': 'FIRST_SECRET'}, {'text': 'SECOND_SECRET'}],
+    })
+    MissionRunner(repository, temp_settings, adapter=adapter).run(mission.id)
+    continuation = adapter.prompt_log['chulan'][2].split('对方的回复', 1)[1]
+    assert 'SECOND_SECRET' in continuation
+    assert 'FIRST_SECRET' not in continuation
+    scores = _wait_scores(repository, mission.id)
+    assert len(scores) == 2 and all(c['value'] == 1 for c in scores)
+
+
+def test_wait_reply_timeout_and_empty_explain_failure(repository, temp_settings):
+    from backend.app.observability.service import collect_turns
+    for mode in ('timeout', 'empty'):
+        class NoReplyAdapter(WaitReplyTestAdapter):
+            def run_turn(self, mission_id, agent_id, turn_id, provider_id, prompt, tools):
+                if agent_id == 'baobao':
+                    if mode == 'timeout':
+                        return TurnOutcome(status=TurnStatus.BLOCKED, summary='CLI idle timeout', failure_code='idle_timeout')
+                    return TurnOutcome(status=TurnStatus.COMPLETED)
+                return super().run_turn(mission_id, agent_id, turn_id, provider_id, prompt, tools)
+        mission = Mission(id='m_wr_' + mode, title=mode, goal='g', target_agent_id='chulan')
+        repository.create_mission(mission)
+        temp_settings.max_turns, temp_settings.max_a2a_invocations = 1, 4
+        adapter = NoReplyAdapter({'chulan': [
+            {'invoke_wait_reply': {'target_agent_id': 'baobao', 'purpose': '确认'}},
+            {'text': '宝宝已经确认了，可以继续。'},
+        ]})
+        result = MissionRunner(repository, temp_settings, adapter=adapter).run(mission.id)
+        assert result.status == MissionStatus.COMPLETED
+        prompt = adapter.prompt_log['chulan'][1]
+        assert '【求助未收到回复】' in prompt and '不要声称已获得对方确认' in prompt
+        assert ('<no reply: empty>' if mode == 'empty' else '<no reply: turn blocked>') in prompt
+        scores = _wait_scores(repository, mission.id)
+        assert len(scores) == 1 and scores[0]['value'] == 1
+        resumed = collect_turns(repository, mission_id=mission.id)[-1]
+        claim = next(c for c in resumed.checks if c['name'] == 'claims_match_events')
+        assert claim['value'] == 0 and 'reply.failed' in claim['note']
+        for text in ('宝宝确认了，可以继续。', '已收到宝宝的回复。'):
+            from backend.app.observability.checks import check_claims_match_events
+            resumed.reply = text
+            assert check_claims_match_events(resumed)['value'] == 0
+        for text in ('宝宝没有回复，我自己继续。', '宝宝未确认，不能说宝宝已经确认了。', '等宝宝已经确认之后再继续。'):
+            from backend.app.observability.checks import check_claims_match_events
+            resumed.reply = text
+            assert check_claims_match_events(resumed)['value'] != 0

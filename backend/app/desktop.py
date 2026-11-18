@@ -62,6 +62,8 @@ def merge_path(*sources: str | None) -> str:
 
 def desktop_env(root: Path, state: Path, base: dict[str, str], shell_path: str | None) -> dict[str, str]:
     env = {k: v for k, v in base.items() if not k.startswith("YIREN_")}
+    # The native shell owns the drain token used for an atomic idle restart.
+    token = env.pop("UNITY_LIFECYCLE_TOKEN", "") or secrets.token_urlsafe(32)
     env.update({
         "PATH": merge_path(shell_path, base.get("PATH")),
         "YIREN_ENVIRONMENT": "desktop",
@@ -77,9 +79,9 @@ def desktop_env(root: Path, state: Path, base: dict[str, str], shell_path: str |
         "YIREN_MAINTENANCE_ENABLED": "false",
         "YIREN_USE_FAKE_CLI": "false",
         "YIREN_DEMO_ONLY": "false",
-        "YIREN_LIFECYCLE_TOKEN": secrets.token_urlsafe(32),
+        "YIREN_LIFECYCLE_TOKEN": token,
         # Keep bytecode out of the signed bundle, for this process and its children.
-        "PYTHONPYCACHEPREFIX": str(Path.home() / "Library/Caches" / APP_NAME / "pycache"),
+        "PYTHONPYCACHEPREFIX": str(state / "cache/pycache") if base.get("UNITY_SUPPORT_DIR") else str(Path.home() / "Library/Caches" / APP_NAME / "pycache"),
     })
     return env
 

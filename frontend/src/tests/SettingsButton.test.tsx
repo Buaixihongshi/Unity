@@ -40,4 +40,35 @@ describe("SettingsButton", () => {
     expect(document.activeElement).toBe(button);
     vi.useRealTimers();
   });
+
+  it("shows desktop settings nav button when isDesktop is true", () => {
+    const onSetAutoDownload = vi.fn();
+    const onCheckForUpdates = vi.fn();
+
+    render(
+      <SettingsButton
+        view={mockView}
+        onSave={vi.fn()}
+        isDesktop={true}
+        bridgeState={{
+          appVersion: "1.0.2",
+          autoDownload: true,
+          lastCheckedAt: null,
+          canCheck: true,
+        }}
+        onSetAutoDownload={onSetAutoDownload}
+        onCheckForUpdates={onCheckForUpdates}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("settings-button"));
+    const desktopNavBtn = screen.getByTestId("settings-nav-desktop");
+    expect(desktopNavBtn).toBeInTheDocument();
+    expect(desktopNavBtn).toHaveTextContent("桌面应用");
+
+    // Click desktop nav
+    fireEvent.click(desktopNavBtn);
+    expect(screen.getByRole("heading", { name: "桌面应用" })).toBeInTheDocument();
+    expect(screen.getByTestId("desktop-version-badge")).toHaveTextContent("v1.0.2");
+  });
 });

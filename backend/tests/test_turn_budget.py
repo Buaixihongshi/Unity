@@ -53,7 +53,9 @@ def test_budget_resets_on_exception_and_isolates_workers():
         list(pool.map(worker, range(6)))
 
 
-def test_tool_activity_cannot_extend_shared_deadline(monkeypatch):
+def test_tool_progress_renewal_extends_shared_budget(monkeypatch):
+    # Issue #136: renewal used to be clamped back to the original budget, so a
+    # busy turn always died at cli_timeout while reporting "extended".
     now = [0.0]
     monkeypatch.setattr('backend.app.adapters.turn_budget.time.monotonic', lambda: now[0])
 
@@ -63,11 +65,98 @@ def test_tool_activity_cannot_extend_shared_deadline(monkeypatch):
         now[0] = 4
         progress.record_result('tool')
         now[0] = 5
-        assert progress.check() is None
-        assert progress.remaining() == 5
+        extension = progress.check()
+        assert extension['previous_deadline_at'] == 10
+        assert extension['deadline_at'] == 15
+        assert remaining_timeout(600) == 10
         now[0] = 11
+        assert progress.remaining() == 4
+        now[0] = 15
+        assert progress.remaining() == 0
+        assert remaining_timeout(600) == 0
+    work()
+
+
+def test_budget_without_progress_still_expires_at_cli_timeout(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('backend.app.adapters.turn_budget.time.monotonic', lambda: now[0])
+
+    @budgeted_turn(10)
+    def work():
+        progress = ToolResultDeadline(10, check_interval=5, clock=lambda: now[0])
+        now[0] = 5
+        assert progress.check() is None
+        now[0] = 10
+        assert progress.check() is None
         assert progress.remaining() == 0
     work()
+
+
+def test_exhausted_budget_is_not_revived_by_late_check(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr('backend.app.adapters.turn_budget.time.monotonic', lambda: now[0])
+
+    @budgeted_turn(10)
+    def work():
+        progress = ToolResultDeadline(20, check_interval=5, clock=lambda: now[0])
+        now[0] = 4
+        progress.record_result('tool')
+        now[0] = 12  # Poll arrives after the shared budget already ran out.
+        assert progress.check() is None
+        assert progress.remaining() == 0
+        assert remaining_timeout(600) == 0
+    work()
+
+
+def test_wall_and_monotonic_drift_is_not_reported_as_renewal(monkeypatch):
+    # The real incident logged five "extensions" whose deadline_at slowly
+    # decreased because the budget (monotonic) and deadline (wall) drifted.
+    wall = [1000.0]
+    monkeypatch.setattr('backend.app.adapters.turn_budget.time.monotonic', lambda: wall[0] - 0.013)
+
+    @budgeted_turn(10)
+    def work():
+        progress = ToolResultDeadline(10, check_interval=5, clock=lambda: wall[0])
+        wall[0] = 1004
+        progress.record_result('tool')
+        wall[0] = 1005
+        extension = progress.check()
+        assert extension['deadline_at'] > extension['previous_deadline_at'] + 1
+        assert progress.deadline == 1015
+    work()
+
+
+def test_busy_process_survives_cli_timeout_inside_budgeted_turn(monkeypatch):
+    import subprocess
+    from backend.app.adapters.mcp_subprocess import ProcessWaitReason, _wait_for_process_with_activity
+
+    clock = [0.0]
+    monkeypatch.setattr('backend.app.adapters.turn_budget.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr('backend.app.adapters.mcp_subprocess.time.time', lambda: clock[0])
+    marks = [100, 400, 700, 1000]  # Tool results in four consecutive windows.
+    extensions = []
+
+    class Process:
+        def wait(self, timeout):
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired('fake', timeout)
+
+    @budgeted_turn(600)
+    def work():
+        progress = ToolResultDeadline(600, check_interval=300, clock=lambda: clock[0])
+
+        def refresh():
+            while marks and clock[0] >= marks[0]:
+                progress.record_result(marks.pop(0))
+
+        return _wait_for_process_with_activity(
+            Process(), hard_timeout=600, idle_timeout=0, last_activity_at=lambda: 0,
+            refresh_activity=refresh, progress_deadline=progress, on_extension=extensions.append)
+
+    assert work() is ProcessWaitReason.HARD_TIMEOUT
+    assert clock[0] == pytest.approx(1800)
+    assert [e['deadline_at'] for e in extensions] == [900, 1200, 1500, 1800]
+    assert all(e['deadline_at'] > e['previous_deadline_at'] for e in extensions)
 
 
 def test_api_budget_expired_before_dns(monkeypatch):
