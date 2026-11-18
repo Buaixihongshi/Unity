@@ -1,7 +1,15 @@
 import type { HostProgress, TurnView } from "../types";
 import { NativeActivity } from "./NativeActivity";
 
-const TIMEOUT_REASONS: Record<string, string> = {
+const FAILURE_REASONS: Record<string, string> = {
+  usage_limit: "账号用量上限",
+  rate_limit: "请求受到限流",
+  authentication: "身份验证失败",
+  missing_submission: "未提交回复",
+  execution_failed: "执行失败",
+  network: "网络请求失败",
+  configuration: "连接配置无效",
+  stopped: "本回合已停止",
   hard_timeout: "单轮总时长用尽",
   idle_timeout: "接力回合长时间没有新活动",
   provider_timeout: "CLI 自身报告超时",
@@ -17,7 +25,11 @@ function HostProgressNote({ progress }: { progress: HostProgress }) {
       <h4>宿主记录 · 非角色发言</h4>
       <dl>
         <dt>阻塞原因</dt>
-        <dd>{TIMEOUT_REASONS[progress.reason] ?? progress.reason}</dd>
+        <dd>{FAILURE_REASONS[progress.reason] ?? progress.reason}</dd>
+        {progress.error && <><dt>错误摘要</dt><dd>{progress.error}</dd></>}
+        {(progress.reason === "usage_limit" || progress.reason === "rate_limit") && (
+          <><dt>后续处理</dt><dd>可等待上游重置或稍后重试，也可检查角色路由。重置提示以上游原文为准。</dd></>
+        )}
         <dt>已调用工具</dt>
         <dd>{progress.tool_calls ? `${progress.tool_calls} 次：${tools}` : "无"}</dd>
         <dt>已登记产物</dt>

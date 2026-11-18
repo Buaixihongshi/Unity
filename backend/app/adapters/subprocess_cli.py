@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from backend.app.adapters.base import CLIAdapter, TurnOutcome
-from backend.app.adapters.failure_text import diagnostic_detail
+from backend.app.adapters.failure_text import cli_limit_failure_code, diagnostic_detail
 from backend.app.domain.models import TurnStatus
 from backend.app.orchestration import interruption
 from backend.app.mcp.tools import MCPToolError, MCPTools
@@ -162,7 +162,8 @@ class SubprocessCLIAdapter(CLIAdapter):
                 stderr_snippet=stderr,
                 stdout_snippet=stdout,
             )
-            return TurnOutcome(status=TurnStatus.BLOCKED, summary=summary, retryable=False)
+            return TurnOutcome(status=TurnStatus.BLOCKED, summary=summary, retryable=False,
+                               failure_code=cli_limit_failure_code(stderr, stdout))
 
         content = self.output_parser(stdout) if stdout else ""
         envelope = _parse_result_envelope(content)

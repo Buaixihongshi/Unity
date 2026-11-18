@@ -51,7 +51,7 @@ from backend.app.adapters.stream_events import StreamEventType, UsageRecord
 from backend.app.adapters.turn_deadline import (
     PROGRESS_CHECK_SECONDS, ToolResultDeadline, is_hub_work_result, is_tool_return,
 )
-from backend.app.adapters.failure_text import diagnostic_detail
+from backend.app.adapters.failure_text import cli_limit_failure_code, diagnostic_detail
 from backend.app.adapters.stream_parsers import StreamLineParser
 from backend.app.adapters.turn_record import TurnRecord
 from backend.app.adapters.subprocess_cli import (
@@ -507,6 +507,7 @@ class MCPSubprocessAdapter(CLIAdapter):
                             stdout_snippet=stdout,
                         )),
                         session_id=captured_session_id[0],
+                        failure_code=cli_limit_failure_code(stderr, stdout),
                     )
 
                 if _mcp_published_message(

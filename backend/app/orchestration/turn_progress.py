@@ -1,7 +1,7 @@
-"""Host-authored progress notes for turns that stop on a timeout.
+"""Host-authored progress notes for turns that fail or stop.
 
-When a turn times out the agent usually has not published anything, so the chat
-would only say that it timed out. The runner snapshots what the turn did from its
+When a turn fails the agent may not have published anything, so the chat
+needs the host to explain the failure. The runner snapshots what the turn did from its
 own durable events (tools, artifacts, last activity) into one ``turn.progress_note``
 event. It is a host record, never an agent message: it is not written to the
 message table and is shown as a labelled system card (iron law L1).
@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from backend.app.storage.repository import Repository
+from backend.app.adapters.failure_text import limit_failure_code, public_failure_text
+from backend.app.adapters.deliberation_errors import failure_code as classify_failure
 
 PROGRESS_NOTE_EVENT = "turn.progress_note"
 TIMEOUT_CODES = ("hard_timeout", "idle_timeout", "provider_timeout", "timeout")
@@ -41,6 +43,32 @@ def timeout_reason(failure_code: Optional[str], summary: Optional[str]) -> Optio
     if not any(word in text for word in _TIMEOUT_WORDS):
         return None
     return "idle_timeout" if "idle timeout" in text else "timeout"
+
+
+def failure_reason(code: Optional[str], error: Optional[str]) -> str:
+    return code or limit_failure_code(error or "") or timeout_reason(None, error) or classify_failure(error or "")
+
+
+def attempt_events(events: Iterable, terminal) -> list:
+    """Slice at durable attempt boundaries, including legacy events without notes."""
+    current = []
+    turn_id = terminal.payload.get("turn_id")
+    for event in events:
+        if event is terminal or event.id == terminal.id:
+            break
+        if event.payload.get("turn_id") != turn_id:
+            continue
+        if event.event_type in {"turn.started", "turn.blocked", "turn.failed", "turn.completed"}:
+            current = []
+        else:
+            current.append(event)
+    return current
+
+
+def project_host_progress(note: dict) -> dict:
+    result = {key: note.get(key) for key in HOST_PROGRESS_FIELDS}
+    result["error"] = public_failure_text(note.get("error") or "")
+    return result
 
 
 def _aware(value) -> Optional[datetime]:
@@ -121,7 +149,7 @@ def record_turn_progress_note(repo: Repository, mission_id: str, *, turn_id: str
     payload = {
         "turn_id": turn_id, "agent_id": agent_id, "provider_id": provider_id,
         "attempt": attempt, "source": "host", "reason": reason,
-        "error": (error or "")[:MAX_ERROR_CHARS],
+        "error": public_failure_text(error, limit=MAX_ERROR_CHARS),
         "stopped_at": stopped_at.isoformat(),
         **summarize_turn_progress(events, turn_id, stopped_at=stopped_at),
     }
