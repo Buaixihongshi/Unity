@@ -331,7 +331,7 @@ def record_a2a_invoke(
             "purpose": purpose,
             "mode": mode,
             "queued_position": queued_position,
-            "callee_step_id": callee_step_id,
+            **({"callee_step_id": callee_step_id} if callee_step_id is not None else {}),
         },
     )
 

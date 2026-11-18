@@ -553,6 +553,10 @@ def test_wait_reply_timeout_and_empty_explain_failure(repository, temp_settings)
         resumed = collect_turns(repository, mission_id=mission.id)[-1]
         claim = next(c for c in resumed.checks if c['name'] == 'claims_match_events')
         assert claim['value'] == 0 and 'reply.failed' in claim['note']
+        for text in ('宝宝确认了，可以继续。', '已收到宝宝的回复。'):
+            from backend.app.observability.checks import check_claims_match_events
+            resumed.reply = text
+            assert check_claims_match_events(resumed)['value'] == 0
         for text in ('宝宝没有回复，我自己继续。', '宝宝未确认，不能说宝宝已经确认了。', '等宝宝已经确认之后再继续。'):
             from backend.app.observability.checks import check_claims_match_events
             resumed.reply = text

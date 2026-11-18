@@ -79,11 +79,11 @@ _TOOL_ALIASES = {
 _FILE_NAME = re.compile(r"[\w.-]+\.[A-Za-z0-9]{1,8}")
 
 
-def _sentences(reply: str) -> list[str]:
+def _sentences(reply: str, *, min_length: int = 6) -> list[str]:
     out = []
     for raw in _SENTENCE.split(reply or ""):
         text = _MARKUP.sub("", raw).strip(" -—·")
-        if len(text) >= 6:
+        if len(text) >= min_length:
             out.append(text)
     return out
 
@@ -165,9 +165,10 @@ def _false_partner_confirmation(turn: Turn) -> Optional[str]:
         partner = "(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True) if n) + ")"
         pattern = re.compile(
             partner + r"(?:已经|已)(?:确认|回复|核实)|"
+            + partner + r"(?:确认|回复|核实)了|"
             + r"(?:收到|拿到)(?:了)?" + partner + r"(?:的)?(?:确认|回复)"
         )
-        for sentence in _sentences(re.sub(r"[，,；;]", "。", turn.reply)):
+        for sentence in _sentences(re.sub(r"[，,；;]", "。", turn.reply), min_length=1):
             if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
                 continue
             if any(not _negated(sentence, m) for m in pattern.finditer(sentence)):
