@@ -1,13 +1,3 @@
 {
-  "exemptions": [
-    {
-      "advisory": "GHSA-fc5q-39xc-vjpf",
-      "packages": ["picomatch"],
-      "severity": "high",
-      "reason": "picomatch ReDoS（GHSA-fc5q-39xc-vjpf，single-branch repeated extglobs）的触发条件是恶意 extglob pattern（如 +(*)、+(*a)）对 crafted 输入串产生指数回溯——恶意载体是 pattern 本身，不是被匹配的文件名。本项目内该依赖仅存在于 fdir/tinyglobby/vite/vitest/@vitejs/plugin-react 开发与测试工具链：npm audit --omit=dev 实测 0 漏洞，不进入运行时产物。已核对的输入面（2026-11-18，PR #193 worktree）：前端 src/ 无 import.meta.glob，vite.config.ts 未自定义 glob，vitest 仅设 environment/setupFiles 用默认 include，即 pattern 均来自工具内置默认值与仓库内开发者编写的配置/源码，无运行时用户输入进入该链。如实标注未验证项：node_modules 内依赖包自带的文件路径不逐一受控（供应链残留），上游各工具传入 pattern 的完整来源未逐个审计；因此本豁免接受的是开发机/CI 上执行工具链阶段的残余风险，不等于该漏洞无害。上游尚无修复版本：公告 affected range 覆盖 picomatch 0 至 4.0.7 全部已发布版本（first_patched_version=null，registry latest 4.0.7），npm 给出的修复是 vitest 4->3、vite 8->6 的两代降级，负资产不采纳。",
-      "issue": 186,
-      "added": "2026-11-18",
-      "withdraw_when": "上游发布修复版且锁文件吸收后，npm audit 不再报告 GHSA-fc5q-39xc-vjpf；届时本豁免会变为 stale 并让门禁失败，必须删除本条并回归验证。"
-    }
-  ]
+  "exemptions": []
 }
