@@ -27,8 +27,11 @@ def npm_audit_shape(advisories: dict[str, tuple[str, str]], via: dict[str, list[
     for name, deps in (via or {}).items():
         vulnerabilities.setdefault(name, {"severity": "high", "isDirect": False, "via": []})
         vulnerabilities[name]["via"].extend(deps)
-    return {"vulnerabilities": vulnerabilities,
-            "metadata": {"vulnerabilities": {"high": len(vulnerabilities), "total": len(vulnerabilities)}}}
+    # The six-key stats block as measured from real `npm audit --json`.
+    stats = {level: 0 for level in gate.SEVERITY_LEVELS}
+    stats["high"] = len(vulnerabilities)
+    stats["total"] = len(vulnerabilities)
+    return {"vulnerabilities": vulnerabilities, "metadata": {"vulnerabilities": stats}}
 
 
 # The exact #186 finding: 6 packages, one root advisory, five transitive chains.
@@ -203,3 +206,80 @@ def test_non_string_via_entry_is_rejected():
     audit["vulnerabilities"]["weird"] = {"severity": "high", "via": [42]}
     with pytest.raises(gate.AuditGateError, match="weird"):
         gate.evaluate(audit, [])
+
+
+# --- fail-closed regressions for #194 r2: summary/details disagreement must
+# --- never pass: a finding only the metadata counts was never exemption-checked.
+
+
+def with_stats(audit: dict, **overrides) -> str:
+    """Serialized audit with metadata.vulnerabilities patched, for subprocess mocks."""
+    payload = json.loads(json.dumps(audit))
+    payload["metadata"]["vulnerabilities"].update(overrides)
+    return json.dumps(payload)
+
+
+def test_main_fails_when_summary_counts_findings_the_details_hide(tmp_path, monkeypatch, capsys):
+    # Review reproduction 1: six exempted findings unchanged, only the summary
+    # gains critical=1/total=7. The hidden seventh finding has no advisory to
+    # check against any exemption, so the gate must fail on the contradiction.
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm(with_stats(PICOMATCH_186, critical=1, total=7), 1))
+    assert gate.main([]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL" in out and "critical=1 contradicts 0 finding(s)" in out
+
+
+def test_main_fails_when_metadata_lacks_the_stats_object(tmp_path, monkeypatch, capsys):
+    # Review reproduction 2: exit 1 with {vulnerabilities:{}, metadata:{}} used
+    # to pass as "0 findings, 0 stale".
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm(json.dumps({"vulnerabilities": {}, "metadata": {}}), 1))
+    assert gate.main(["--exemptions", write_exemptions(tmp_path, [])]) == 1
+    assert "stats object" in capsys.readouterr().out
+
+
+def test_main_fails_when_exit1_contradicts_zero_findings(tmp_path, monkeypatch, capsys):
+    clean = json.dumps({"vulnerabilities": {},
+                        "metadata": {"vulnerabilities": {"info": 0, "low": 0, "moderate": 0,
+                                                         "high": 0, "critical": 0, "total": 0}}})
+    monkeypatch.setattr(gate.subprocess, "run", lambda *a, **k: fake_npm(clean, 1))
+    assert gate.main(["--exemptions", write_exemptions(tmp_path, [])]) == 1
+    assert "untrustworthy" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["6", None, True, -1])
+def test_main_fails_on_mistyped_stat_values(tmp_path, monkeypatch, capsys, value):
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm(with_stats(PICOMATCH_186, total=value), 1))
+    assert gate.main([]) == 1
+    assert "total" in capsys.readouterr().out
+
+
+def test_main_fails_when_severity_counts_disagree_with_details(tmp_path, monkeypatch, capsys):
+    # high=5 + critical=1 keeps sum(5+1)=6=total=len(details) self-consistent;
+    # only the per-severity detail check catches the phantom critical.
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm(with_stats(PICOMATCH_186, high=5, critical=1), 1))
+    assert gate.main([]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL" in out and "high=5 contradicts 6 finding(s)" in out
+
+
+def test_main_fails_on_unknown_finding_severity(tmp_path, monkeypatch, capsys):
+    audit = json.loads(json.dumps(PICOMATCH_186))
+    audit["vulnerabilities"]["fdir"]["severity"] = "extreme"
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda *a, **k: fake_npm(json.dumps(audit), 1))
+    assert gate.main([]) == 1
+    assert "unknown severity" in capsys.readouterr().out
+
+
+def test_main_passes_on_clean_audit(tmp_path, monkeypatch, capsys):
+    clean = json.dumps({"vulnerabilities": {},
+                        "metadata": {"vulnerabilities": {"info": 0, "low": 0, "moderate": 0,
+                                                         "high": 0, "critical": 0, "total": 0}}})
+    monkeypatch.setattr(gate.subprocess, "run", lambda *a, **k: fake_npm(clean, 0))
+    assert gate.main(["--exemptions", write_exemptions(tmp_path, [])]) == 0
+    out = capsys.readouterr().out
+    assert "PASS: 0" in out

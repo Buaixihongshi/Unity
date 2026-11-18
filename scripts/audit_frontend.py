@@ -16,6 +16,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 EXEMPTIONS_PATH = ROOT / "config" / "audit-exemptions.json"
 REQUIRED_FIELDS = ("advisory", "reason", "issue", "withdraw_when")
+SEVERITY_LEVELS = ("info", "low", "moderate", "high", "critical")
 UNRESOLVED = "unresolved"
 
 
@@ -47,6 +48,42 @@ def load_exemptions(path: Path) -> list[dict]:
     return entries
 
 
+def _validate_summary(audit: dict, returncode: int) -> None:
+    """Cross-check metadata.vulnerabilities against the finding details (#194).
+
+    npm audit reports one entry per affected package in `vulnerabilities` and
+    summarizes them in metadata.vulnerabilities; both sides must agree. A
+    summary that counts a finding the details do not show was never matched
+    against any exemption, so missing, mistyped, or contradictory stats fail
+    the gate instead of passing as "nothing uncovered".
+    """
+    stats = audit["metadata"].get("vulnerabilities")
+    if not isinstance(stats, dict):
+        raise AuditGateError("npm audit metadata lacks a 'vulnerabilities' stats object")
+    for key in SEVERITY_LEVELS + ("total",):
+        value = stats.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise AuditGateError(f"metadata.vulnerabilities.{key} must be a non-negative "
+                                 f"integer, got {value!r}")
+    counted = {level: 0 for level in SEVERITY_LEVELS}
+    for name, finding in audit["vulnerabilities"].items():
+        if not isinstance(finding, dict):
+            raise AuditGateError(f"finding for {name} is not an object")
+        severity = finding.get("severity")
+        if severity not in counted:
+            raise AuditGateError(f"finding for {name} has unknown severity {severity!r}")
+        counted[severity] += 1
+    for level, count in counted.items():
+        if stats[level] != count:
+            raise AuditGateError(f"metadata.vulnerabilities.{level}={stats[level]} contradicts "
+                                 f"{count} finding(s) at that severity in the details")
+    if stats["total"] != len(audit["vulnerabilities"]):
+        raise AuditGateError(f"metadata.vulnerabilities.total={stats['total']} contradicts "
+                             f"{len(audit['vulnerabilities'])} finding(s) in the details")
+    if returncode == 1 and stats["total"] == 0:
+        raise AuditGateError("npm audit exited 1 but reports zero findings; output is untrustworthy")
+
+
 def run_npm_audit(root: Path = ROOT) -> dict:
     proc = subprocess.run(["npm", "--prefix", "frontend", "audit", "--json"],
                           cwd=root, capture_output=True, text=True)
@@ -68,6 +105,7 @@ def run_npm_audit(root: Path = ROOT) -> dict:
         if not isinstance(audit.get(key), dict):
             raise AuditGateError(f"npm audit output lacks a '{key}' object; "
                                  f"refusing to pass on unusable audit data: {detail}")
+    _validate_summary(audit, proc.returncode)
     return audit
 
 
@@ -165,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"audit: FAIL: {len(verdict['remaining'])} package finding(s) uncovered, "
               f"{len(verdict['stale'])} stale exemption(s)")
         return 1
-    total = ((audit.get("metadata") or {}).get("vulnerabilities") or {}).get("total", 0)
+    total = audit["metadata"]["vulnerabilities"]["total"]
     print(f"audit: PASS: {total} reported finding(s) fully covered by reviewed exemptions")
     return 0
 
