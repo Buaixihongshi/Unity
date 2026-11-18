@@ -541,3 +541,48 @@ def test_turn_api_returns_detail_and_404(temp_settings):
     assert response.status_code == 200
     assert response.json()["turn"]["turn_id"] == "t_new"
     assert client.get("/api/observability/turns/missing").status_code == 404
+
+
+@pytest.mark.parametrize('damage, expected', [
+    ('valid', 1), ('missing', 0), ('duplicate', 0), ('wrong_turn', 0),
+    ('wrong_message', 0), ('wrong_message_owner', 0), ('no_resume', 0),
+    ('cancelled', 1), ('pending', None), ('legacy', None),
+])
+def test_wait_closed_requires_causal_reply_and_continuation(damage, expected):
+    m = mission()
+    m.status = 'running' if damage == 'pending' else 'completed'
+    events = [
+        event(1, 'turn.started', turn_id='caller', agent_id='chulan'),
+        event(2, 'turn.completed', turn_id='caller'),
+        event(3, 'a2a.invoke', sender_turn_id='caller', sender_agent_id='chulan',
+              target_agent_id='baobao', mode='wait_reply', callee_step_id='step'),
+        event(4, 'a2a.step.started', turn_id='callee', agent_id='baobao', step_id='step', origin='a2a'),
+        event(5, 'turn.started', turn_id='callee', agent_id='baobao'),
+        event(6, 'turn.completed', turn_id='callee'),
+        event(7, 'a2a.reply', invoke_event_id='3', turn_id='callee', reply_message_id='msg_callee'),
+        event(8, 'a2a.step.started', turn_id='resume', agent_id='chulan', step_id='resume_step', origin='a2a_resume', parent_step_id='step'),
+        event(9, 'turn.started', turn_id='resume', agent_id='chulan'),
+        event(10, 'turn.completed', turn_id='resume'),
+    ]
+    msg = message('callee', '伙伴的最终回复')
+    msg.agent_id = 'baobao'
+    if damage in ('missing', 'pending', 'cancelled'):
+        events = events[:6]
+    if damage == 'cancelled':
+        events.append(event(7, 'a2a.cancelled', cancelled_steps=[{'step_id': 'step', 'origin': 'a2a'}]))
+    if damage == 'duplicate':
+        events.append(event(11, 'a2a.reply.failed', invoke_event_id='3', turn_id='callee'))
+    if damage == 'wrong_turn':
+        events[6].payload['turn_id'] = 'unrelated'
+    if damage == 'wrong_message':
+        events[6].payload['reply_message_id'] = 'nonexistent'
+    if damage == 'wrong_message_owner':
+        msg.agent_id = 'wangye'
+    if damage == 'no_resume':
+        events = events[:7]
+    if damage == 'legacy':
+        events[2].payload.pop('callee_step_id')
+    caller = build_turns(reversed(events), [msg], m)[0]
+    result = checks.check_a2a_wait_closed(caller)
+    assert result['value'] == expected, result
+    assert 'invoke 3' in result['note']

@@ -150,6 +150,31 @@ def _result(name: str, value, note: str) -> dict:
             "value": value, "note": note}
 
 
+def _false_partner_confirmation(turn: Turn) -> Optional[str]:
+    """Match completed confirmation claims only against this continuation's failed wait."""
+    if not turn.a2a_failed_targets:
+        return None
+    from backend.app.domain.agent_registry import get_agent_registry
+    registry = get_agent_registry()
+    for target in turn.a2a_failed_targets:
+        profile = next((a for a in registry.all() if a.id == target), None)
+        names = {target}
+        if profile:
+            names.update((profile.display_name, *profile.aliases))
+        names.update({"baobao": ("宝宝", "冯宝宝"), "chulan": ("楚岚", "张楚岚")}.get(target, ()))
+        partner = "(?:" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True) if n) + ")"
+        pattern = re.compile(
+            partner + r"(?:已经|已)(?:确认|回复|核实)|"
+            + r"(?:收到|拿到)(?:了)?" + partner + r"(?:的)?(?:确认|回复)"
+        )
+        for sentence in _sentences(re.sub(r"[，,；;]", "。", turn.reply)):
+            if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
+                continue
+            if any(not _negated(sentence, m) for m in pattern.finditer(sentence)):
+                return target
+    return None
+
+
 def check_claims_match_events(turn: Turn) -> dict:
     """A claim about an action must not be contradicted by this turn's events.
 
@@ -159,6 +184,9 @@ def check_claims_match_events(turn: Turn) -> dict:
     errored. A claim with no event either way is `n/a`, because the CLI's own
     tools are not always traced.
     """
+    target = _false_partner_confirmation(turn)
+    if target is not None:
+        return _result("claims_match_events", FAIL, f"声称 {target} 已确认/回复，但本次求助 reply.failed")
     found = claims(turn.reply)
     if not found:
         return _result("claims_match_events", NA, "回复没有可核对的行动声明")
@@ -253,6 +281,15 @@ def check_blocked_explained(turn: Turn) -> dict:
 _ENDED_MISSION = {"blocked", "completed", "failed", "completed_with_warnings"}
 
 
+def check_a2a_wait_closed(turn: Turn) -> dict:
+    if not turn.a2a_waits:
+        return _result("a2a_wait_closed", NA, "本回合没有 wait_reply 求助")
+    failures = [note for value, note in turn.a2a_waits if value == FAIL]
+    pending = [note for value, note in turn.a2a_waits if value is None]
+    return _result("a2a_wait_closed", FAIL if failures else NA if pending else PASS,
+                   "；".join(failures or pending or [note for _, note in turn.a2a_waits]))
+
+
 def check_turn_closed(turn: Turn) -> dict:
     """A turn whose mission has ended must have ended too.
 
@@ -292,6 +329,7 @@ TRACE, AGENT = "trace", "agent"
 
 CHECKS: dict[str, Callable[[Turn], dict]] = {
     "turn_closed": check_turn_closed,
+    "a2a_wait_closed": check_a2a_wait_closed,
     "blocked_explained": check_blocked_explained,
     "usage_reported": check_usage_reported,
     "claims_match_events": check_claims_match_events,
@@ -300,6 +338,7 @@ CHECKS: dict[str, Callable[[Turn], dict]] = {
 
 LAYER: dict[str, str] = {
     "turn_closed": TRACE,
+    "a2a_wait_closed": TRACE,
     "blocked_explained": TRACE,
     "usage_reported": TRACE,
     "claims_match_events": AGENT,
@@ -308,6 +347,7 @@ LAYER: dict[str, str] = {
 
 WHAT: dict[str, str] = {
     "turn_closed": "任务结束时回合有终态事件",
+    "a2a_wait_closed": "求助有唯一终态、真实回复和发起者续答",
     "blocked_explained": "失败/阻塞的回合给出了可读的原因",
     "usage_reported": "有产出的回合记录了用量",
     "claims_match_events": "回复里的行动声明不与本回合事件矛盾",

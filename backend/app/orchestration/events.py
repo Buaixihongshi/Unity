@@ -318,6 +318,7 @@ def record_a2a_invoke(
     purpose: str,
     mode: str,
     queued_position: int,
+    callee_step_id: Optional[str] = None,
 ) -> None:
     repo.add_event(
         mission_id,
@@ -330,6 +331,7 @@ def record_a2a_invoke(
             "purpose": purpose,
             "mode": mode,
             "queued_position": queued_position,
+            "callee_step_id": callee_step_id,
         },
     )
 
