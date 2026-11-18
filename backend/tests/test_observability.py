@@ -164,6 +164,29 @@ def test_claims_ignore_plans_and_denials():
     assert checks.check_claims_match_events(turn)["value"] == checks.NA
 
 
+@pytest.mark.parametrize("reply", [
+    "等宝宝已经确认之后再继续。",
+    "等宝宝已经确认，之后再继续。",
+    "等宝宝已经确认, 后再继续。",
+    "等宝宝已经确认；之后再继续。",
+])
+def test_failed_wait_confirmation_plan_is_not_a_completed_claim(reply):
+    turn = turn_with(reply)
+    turn.a2a_failed_targets = ["baobao"]
+    assert checks.check_claims_match_events(turn)["value"] is checks.NA
+
+
+@pytest.mark.parametrize("reply", [
+    "等宝宝已经确认，之后再继续；宝宝已经回复了。",
+    "宝宝已经回复了，等宝宝已经确认，之后再继续。",
+    "等宝宝已经确认。之后再继续，宝宝已经回复了。",
+])
+def test_wait_plan_does_not_hide_another_completed_confirmation(reply):
+    turn = turn_with(reply)
+    turn.a2a_failed_targets = ["baobao"]
+    assert checks.check_claims_match_events(turn)["value"] == checks.FAIL
+
+
 def test_claims_fail_when_reply_says_done_but_turn_blocked():
     turn = turn_with("已经修复好了。", status="blocked")
     result = checks.check_claims_match_events(turn)

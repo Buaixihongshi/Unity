@@ -56,6 +56,7 @@ _CLAIM_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("done", re.compile(r"已完成|已修复|修复好了|已经修复|已解决|搞定了|已处理|已经修好")),
 ]
 _PLAN = re.compile(r"建议|可以|应该|将会|下一步|如果|若|假如|一旦|需要|计划|打算|不妨|待|设想|原则是|预计")
+_WAIT_PLAN = re.compile(r"等[^，,；;。！？\n]*?(?:[，,；;]\s*)?(?:之后|后再)")
 _DENIAL = re.compile(r"没有|没|未|无法|不能|尚未|并未")
 _CONTRAST = re.compile(r"但|不过|却|而是")
 _SENTENCE = re.compile(r"[。！？\n]+")
@@ -168,7 +169,10 @@ def _false_partner_confirmation(turn: Turn) -> Optional[str]:
             + partner + r"(?:确认|回复|核实)了|"
             + r"(?:收到|拿到)(?:了)?" + partner + r"(?:的)?(?:确认|回复)"
         )
-        for sentence in _sentences(re.sub(r"[，,；;]", "。", turn.reply), min_length=1):
+        # Remove only the waiting span before splitting clauses. Skipping the
+        # entire sentence would also hide a separate completed confirmation.
+        reply = _WAIT_PLAN.sub("", turn.reply)
+        for sentence in _sentences(re.sub(r"[，,；;]", "。", reply), min_length=1):
             if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
                 continue
             if any(not _negated(sentence, m) for m in pattern.finditer(sentence)):
