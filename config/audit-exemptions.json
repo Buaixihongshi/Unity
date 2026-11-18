@@ -1,0 +1,13 @@
+{
+  "exemptions": [
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "packages": ["picomatch"],
+      "severity": "high",
+      "reason": "picomatch ReDoS（single-branch repeated extglobs）只影响 fdir/tinyglobby/vite/vitest/@vitejs/plugin-react 这条开发与测试工具链，npm audit --omit=dev 为 0 漏洞，不进入运行时产物；触发需要攻击者控制的文件名走恶意 glob，本仓库测试数据自控。上游尚无修复版本：公告 affected range 覆盖 picomatch 0 至 4.0.7 全部已发布版本，npm 给出的修复是 vitest 4->3、vite 8->6 的两代降级，负资产不采纳。",
+      "issue": 186,
+      "added": "2026-11-18",
+      "withdraw_when": "上游发布修复版且锁文件吸收后，npm audit 不再报告 GHSA-fc5q-39xc-vjpf；届时本豁免会变为 stale 并让门禁失败，必须删除本条并回归验证。"
+    }
+  ]
+}

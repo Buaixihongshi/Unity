@@ -143,6 +143,10 @@ lsof/ps 缺失时监听进程证据可为空；旧服务缺少启动身份时如
 唯一命令清单在 scripts/checks.py。backend 包含 pip check 和后端全量测试；frontend
 包含前端测试、类型检查和生产构建；smoke 包含引导、连续会话、多 Agent 和圆桌四项离线
 检查；eval 使用 fixture。all 包含以上全部及 npm audit，网络不可用时不能假装审计通过。
+audit 由 scripts/audit_frontend.py 执行：finding 的全部根公告都在 config/audit-exemptions.json
+登记（advisory/reason/issue/withdraw_when 四项必填）才放行；未覆盖的发现照常失败；豁免
+不再命中任何发现（如上游修复被锁文件吸收）也会失败，必须删掉该条豁免。豁免清单属于
+门禁变更，调整需非作者审阅。
 只有 --real-cli 会追加真实模型验收。CI 调用相同分组，保留 Backend tests 与
 Frontend tests and build 检查名称，并支持 codex/** 作为连续 PR 的基分支。
 
