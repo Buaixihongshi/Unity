@@ -70,3 +70,44 @@ describe("StatusBadge", () => {
     expect(screen.queryByLabelText("宿主进度记录")).toBeNull();
   });
 });
+
+describe("non-timeout failure reasons", () => {
+  it.each([
+    ["usage_limit", "账号用量上限", "You've hit your 5-hour limit · resets 17:25:52"],
+    ["rate_limit", "请求受到限流", "HTTP 429: retry later"],
+    ["authentication", "身份验证失败", "not logged in"],
+  ])("shows %s and its host error without requiring tool activity", (reason, label, error) => {
+    render(<StatusBadge turn={{
+      ...makeStatusTurn("张楚岚本轮未完成，未发布回复。"),
+      eventType: "turn.failure",
+      metadata: { host_progress: {
+        source: "host", reason, error, tool_calls: 0, tools: [], artifacts: [], published: false,
+      } },
+    }} />);
+    const note = screen.getByLabelText("宿主进度记录");
+    expect(note).toHaveTextContent(label);
+    expect(note).toHaveTextContent("错误摘要");
+    expect(note).toHaveTextContent(error);
+    expect(note).toHaveTextContent("未记录到活动");
+    if (reason !== "authentication") {
+      expect(note).toHaveTextContent("也可检查角色路由");
+      expect(note).toHaveTextContent("重置提示以上游原文为准");
+    }
+    expect(note).not.toHaveTextContent("Asia/Shanghai");
+    expect(note).not.toHaveTextContent("执行超时");
+  });
+
+  it("keeps a published reply notice and timeout explanation with an error summary", () => {
+    render(<StatusBadge turn={{
+      ...makeStatusTurn("王也本轮超时，已发布的回复已保留。"), eventType: "turn.failure",
+      metadata: { host_progress: {
+        source: "host", reason: "hard_timeout", error: "timeout after 600s",
+        tool_calls: 1, tools: [{ name: "Read", count: 1 }], artifacts: ["result.md"], published: true,
+      } },
+    }} />);
+    expect(screen.getByLabelText("宿主进度记录")).toHaveTextContent("单轮总时长用尽");
+    expect(screen.getByText("timeout after 600s")).toBeInTheDocument();
+    expect(screen.getByText("王也本轮超时，已发布的回复已保留。")).toBeInTheDocument();
+    expect(screen.getByText("result.md")).toBeInTheDocument();
+  });
+});

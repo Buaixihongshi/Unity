@@ -42,12 +42,12 @@ def _json(line: str) -> Optional[dict]:
 def _event_error(event: dict) -> str:
     """The error a stream event carries, or "" when it carries none."""
     kind = event.get("type")
-    if kind == "result" and (event.get("is_error") or event.get("subtype") not in (None, "success")):
-        return str(event.get("result") or event.get("error") or event.get("terminal_reason") or "")
+    if kind == "result" and (event.get("api_error") or event.get("is_error") or event.get("subtype") not in (None, "success")):
+        return str(event.get("result") or event.get("error") or event.get("api_error") or event.get("terminal_reason") or "")
     if kind in ("error", "turn.failed"):
         error = event.get("error")
         if isinstance(error, dict):
-            return str(error.get("message") or "")
+            return str(error.get("message") or error.get("code") or "")
         return str(event.get("message") or error or "")
     return ""
 
@@ -104,3 +104,52 @@ def is_informative(reason: str) -> bool:
     """
     rest = _PREFIX.sub("", (reason or "").strip(), count=1)
     return any(not is_noise(line) for line in rest.splitlines())
+
+
+_USAGE_LIMIT = re.compile(
+    r"usage_limit(?:_reached)?|insufficient_quota|(?:usage|quota) (?:limit (?:reached|exceeded)|exceeded)"
+    r"|(?:hit|reached|exceeded) (?:your |the )?(?:[0-9]+[- ]hour|daily|weekly|monthly|usage) limit",
+    re.IGNORECASE,
+)
+_RATE_LIMIT = re.compile(r"rate[_ -]limit|too many requests|\bHTTP(?:[/ ]+[0-9.]+)?\s*[:=]?\s*429\b"
+                         r"|\bstatus(?:_code| code)?\s*[:=]?\s*429\b", re.IGNORECASE)
+
+
+def limit_failure_code(text: str) -> Optional[str]:
+    """Only classify limits when the diagnostic contains explicit evidence."""
+    if _USAGE_LIMIT.search(text or ""):
+        return "usage_limit"
+    if _RATE_LIMIT.search(text or ""):
+        return "rate_limit"
+    return None
+
+
+def cli_limit_failure_code(stderr: str = "", stdout: str = "") -> Optional[str]:
+    # Inspect terminal error frames, never arbitrary tool/assistant output.
+    for stream in (stdout, stderr):
+        for line in reversed((stream or "").splitlines()):
+            event = _json(line.strip())
+            if not event or event.get("type") not in _ERROR_EVENTS:
+                continue
+            message = _event_error(event)
+            if message:
+                error = event.get("error")
+                nested_code = error.get("code") if isinstance(error, dict) else ""
+                return limit_failure_code(" ".join(str(part or "") for part in
+                                                  (event.get("api_error"), nested_code, message)))
+    return limit_failure_code(diagnostic_detail(stderr, stdout, limit=8192))
+
+
+def public_failure_text(text: str, *, limit: int = 300) -> str:
+    """Bounded card text. Redact before trimming, including old stored errors."""
+    from backend.app.adapters.cli_diagnostics import _redact
+    from backend.app.orchestration.events import sanitize_tool_output
+
+    clean = re.sub(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1 [REDACTED]", str(text or ""))
+    clean = _redact(clean)
+    clean = re.sub(r"(?i)https?://[^\s<>\"']+", "[URL]", clean)
+    # Quoted paths may contain spaces; bare paths stop at punctuation/whitespace.
+    clean = re.sub(r'''(["'])(?:[A-Za-z]:[\\/]|/|~/)[^"'\n]*\1''', "[PATH]", clean)
+    clean = re.sub(r"(?<![\w:])(?:[A-Za-z]:[\\/]|/|~/)[^\s,;<>\"'，；]+", "[PATH]", clean)
+    clean = sanitize_tool_output(clean)
+    return clean if len(clean) <= limit else clean[:limit - 1] + "…"
