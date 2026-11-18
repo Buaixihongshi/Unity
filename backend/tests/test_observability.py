@@ -213,6 +213,9 @@ def test_wait_plan_does_not_hide_another_completed_confirmation(reply):
     ("等宝宝已经回复了,稍后再继续。", "baobao", None),
     ("我先等宝宝已经回复了,之后再继续。", "baobao", None),
     ("我先等宝宝已经回复了。之后再继续。", "baobao", 0),
+    # Deletion must preserve the original wait boundary and first clause.
+    ("等宝宝已经回复了。等王也之后再继续，宝宝稍后再确认。", "baobao", 0),
+    ("等结束之后宝宝已经确认了。之后再继续。", "baobao", 0),
     # Additional guards for the actual first-clause exemption.
     ("等但宝宝已经回复了。之后再继续。", "baobao", 0),
     ("等宝宝已经回复了。", "baobao", 0),
