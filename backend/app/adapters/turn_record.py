@@ -262,38 +262,74 @@ def prune(root: Path, max_total_bytes: int, *, keep: Optional[Path] = None) -> N
         _prune_lock.release()
 
 
-def read_records(database_path: Path, mission_id: str, turn_id: str, *, max_entries: int = 20000) -> list[dict]:
-    """Every record of one turn, oldest first; each is header + entries + exit."""
+def read_records(database_path: Path, mission_id: str, turn_id: str, *, max_entries: int = 20000,
+                 strict: bool = False) -> list[dict]:
+    """Every record of one turn, oldest first; each is header + entries + exit.
+
+    A file named for the turn that does not read back as its record is skipped,
+    and so is a line that is not an entry. ``strict`` keeps each such file as a
+    record with an ``error`` and no entries instead, for readers that must not
+    silently discard a matching file (the closed-book audit, #161).
+    """
     directory = records_root(database_path) / _safe(mission_id)
     records = []
     for path in directory.glob(f"{_safe(turn_id)}.tr_*.jsonl"):
-        if path.is_symlink() or not path.is_file():
-            continue
-        entries = []
-        try:
-            modified = path.stat().st_mtime_ns
-            with path.open(encoding="utf-8") as stream:
-                for index, line in enumerate(stream):
-                    if index >= max_entries:
-                        entries.append({"kind": "omitted", "reason": "entry_limit"})
-                        break
-                    try:
-                        entries.append(json.loads(line))
-                    except ValueError:
-                        continue
-        except OSError:
-            continue
-        header = next((e for e in entries if e.get("kind") == "header"), None)
-        if header is None or header.get("turn_id") != turn_id:
-            continue
-        records.append({
-            "record_id": header.get("record_id"),
-            "provider_id": header.get("provider_id"),
-            "route": header.get("route"),
-            "started_at": header.get("t"),
-            "_order": (header.get("started_ns") or 0, modified),
-            "finished": any(e.get("kind") == "exit" for e in entries),
-            "entries": entries,
-        })
+        record, error = _read_record(path, mission_id, turn_id, max_entries, strict)
+        if error is None:
+            records.append(record)
+        elif strict:
+            records.append({"record_id": None, "error": error, "_order": (0, 0), "finished": False, "entries": []})
     records.sort(key=lambda record: record.pop("_order"))
     return records
+
+
+def _read_record(path: Path, mission_id: str, turn_id: str, max_entries: int,
+                 strict: bool) -> tuple[Optional[dict], Optional[str]]:
+    """One file named for the turn: its record, or why it does not read back as one."""
+    entries = []
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None, "not a regular file"
+        modified = path.stat().st_mtime_ns
+        with path.open(encoding="utf-8") as stream:
+            for index, line in enumerate(stream):
+                if index >= max_entries:
+                    entries.append({"kind": "omitted", "reason": "entry_limit"})
+                    break
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    entry = None
+                if isinstance(entry, dict):
+                    entries.append(entry)
+                elif strict:
+                    return None, "a line is not an entry"
+    except (OSError, UnicodeDecodeError):
+        return None, "could not be read"
+    header = next((e for e in entries if e.get("kind") == "header"), None)
+    if header is None:
+        return None, "no header"
+    if header.get("turn_id") != turn_id:
+        return None, "header names another turn"
+    if strict and (
+        entries[0] is not header
+        or sum(e.get("kind") == "header" for e in entries) != 1
+        or type(header.get("schema")) is not int or header["schema"] != SCHEMA
+        or header.get("mission_id") != mission_id
+        or not isinstance(header.get("record_id"), str)
+        or path.name != f"{_safe(turn_id)}.{header.get('record_id')}.jsonl"
+        or type(header.get("started_ns")) is not int or header["started_ns"] <= 0
+        or type(header.get("t")) not in (int, float)
+        or any(not isinstance(header.get(key), str) or not header[key]
+               for key in ("agent_id", "provider_id", "route"))
+    ):
+        return None, "invalid header"
+    return {
+        "record_id": header.get("record_id"),
+        "provider_id": header.get("provider_id"),
+        "route": header.get("route"),
+        "started_at": header.get("t"),
+        "_order": (header.get("started_ns") or 0, modified),
+        "finished": any(e.get("kind") == "exit" for e in entries),
+        "entries": entries,
+    }, None

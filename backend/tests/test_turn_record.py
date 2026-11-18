@@ -128,6 +128,74 @@ def test_reader_returns_records_in_order_and_ignores_foreign_files(tmp_path):
     assert records[1]["entries"][-1] == {"kind": "stdout", "t": records[1]["entries"][-1]["t"], "line": "ok"}
 
 
+def test_strict_reader_keeps_every_file_of_the_turn_it_cannot_read(tmp_path):
+    database = tmp_path / "data" / "db.sqlite3"
+    good = TurnRecord(database, mission_id="m_1", turn_id="t_1", agent_id="a", provider_id="claude", route="chat")
+    good.finish(exit_code=0)
+    directory = good.path.parent
+    (directory / "t_1.tr_empty.jsonl").write_text("")  # its header's write failed
+    (directory / "t_1.tr_link.jsonl").symlink_to(good.path)
+    (directory / "t_1.tr_forged.jsonl").write_text(json.dumps({"kind": "header", "turn_id": "other"}) + "\n")
+    (directory / "t_1.tr_binary.jsonl").write_bytes(b"\xff\n")
+    header = {"kind": "header", "turn_id": "t_1", "record_id": "tr_list"}
+    (directory / "t_1.tr_list.jsonl").write_text(json.dumps(header) + "\n[]\n")
+    # The records page skips what it cannot read, and a line that is not an entry, without raising.
+    assert sorted(r["record_id"] for r in read_records(database, "m_1", "t_1")) == sorted([good.record_id, "tr_list"])
+    # The closed-book audit has to account for every file of the turn (#161).
+    strict = read_records(database, "m_1", "t_1", strict=True)
+    assert [r["record_id"] for r in strict if "error" not in r] == [good.record_id]
+    assert sorted(r["error"] for r in strict if "error" in r) == [
+        "a line is not an entry", "could not be read", "header names another turn", "no header", "not a regular file"]
+
+
+@pytest.mark.parametrize("damage", ["missing-schema", "wrong-mission", "wrong-record-id", "bad-order",
+                                   "late-header", "duplicate-header", "missing-provider"])
+def test_strict_reader_rejects_bad_headers_beside_a_good_record(tmp_path, damage):
+    good, bad = _record(tmp_path), _record(tmp_path)
+    good.finish(exit_code=0)
+    bad.finish(exit_code=0)
+    entries = _entries(bad.path)
+    header = entries[0]
+    if damage == "missing-schema":
+        del header["schema"]
+    elif damage == "wrong-mission":
+        header["mission_id"] = "another-mission"
+    elif damage == "wrong-record-id":
+        header["record_id"] = good.record_id
+    elif damage == "bad-order":
+        header["started_ns"] = []  # must be rejected before sorting against the good record
+    elif damage == "late-header":
+        entries.reverse()
+    elif damage == "duplicate-header":
+        entries.append(header)
+    elif damage == "missing-provider":
+        del header["provider_id"]
+    bad.path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    records = read_records(tmp_path / "data" / "db.sqlite3", "m_1", "t_1", strict=True)
+    assert len(records) == 2
+    assert [r["record_id"] for r in records if "error" not in r] == [good.record_id]
+    assert [r["error"] for r in records if "error" in r] == ["invalid header"]
+
+
+def test_reader_reports_open_failure_only_in_strict_mode(tmp_path, monkeypatch):
+    good, unreadable = _record(tmp_path), _record(tmp_path)
+    good.finish(exit_code=0)
+    unreadable.finish(exit_code=0)
+    original_open = Path.open
+
+    def failed_open(path, *args, **kwargs):
+        if path == unreadable.path:
+            raise PermissionError("fixture read failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failed_open)
+    database = tmp_path / "data" / "db.sqlite3"
+    assert [r["record_id"] for r in read_records(database, "m_1", "t_1")] == [good.record_id]
+    strict = read_records(database, "m_1", "t_1", strict=True)
+    assert len(strict) == 2
+    assert [r["error"] for r in strict if "error" in r] == ["could not be read"]
+
+
 def test_version_probe_is_cached_per_installed_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(turn_record, "VERSION_PROBE", True)
     calls = tmp_path / "calls"
