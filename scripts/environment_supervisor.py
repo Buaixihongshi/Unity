@@ -78,6 +78,38 @@ def terminate(children):
             child.wait(timeout=5)
 
 
+IDLE_CHECK_SECONDS = 60
+
+
+def idle_limit(profile, idle_stop=None):
+    """Minutes without user requests before a supervisor stops itself; None disables it."""
+    minutes = profiles()[profile].get("idle_stop_minutes") if idle_stop is None else idle_stop
+    return minutes or None
+
+
+def idle_for(port, limit):
+    """True when the backend has had no user request for `limit` minutes and holds no work.
+
+    None means the backend predates idle tracking, so idle stop cannot be applied to it.
+    """
+    runtime = request(port)["runtime"]
+    if "idle_seconds" not in runtime: return None
+    if any((runtime.get("activity") or {}).values()): return False
+    return runtime["idle_seconds"] >= limit * 60
+
+
+def running_instances(profile):
+    """Live managed supervisors of `profile`, from the shared instance registry."""
+    found = []
+    for entry in sorted((home() / ".instances").glob("*.json")):
+        try:
+            record = json.loads(Path(json.loads(entry.read_text())["record"]).read_text())
+        except (OSError, ValueError, KeyError):
+            continue
+        if record.get("environment") == profile and alive(record): found.append(record)
+    return found
+
+
 def backend_command(py, port, reload, state_dirs=()):
     args = [str(py), "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", str(port)]
     if reload:
@@ -92,8 +124,9 @@ def backend_command(py, port, reload, state_dirs=()):
 
 def supervise(root, profile, *, real=False, providers="codex", backend=None, frontend=None,
               allocate=False, backend_only=False, install=True, reload=None, state=None, open_browser=False,
-              reset_onboarding=False, inherit_cli=False):
+              reset_onboarding=False, inherit_cli=False, idle_stop=None):
     state = state or state_path(root, profile, real)
+    limit = idle_limit(profile, idle_stop)
     private_dir(state / "runtime")
     with lock(state / "runtime/owner.lock"):
         py = setup(root, install, backend_only)
@@ -113,6 +146,7 @@ def supervise(root, profile, *, real=False, providers="codex", backend=None, fro
                 "token_file": str(token_file), "status": "starting", "state": str(state),
                 "real_cli": env["YIREN_USE_FAKE_CLI"] == "false",
                 "cli_config_source": "runtime" if inherit_cli else "isolated",
+                "idle_stop_minutes": limit,
             }
             path = record_path(root, profile, real, state)
             write_json(path, record)
@@ -131,8 +165,13 @@ def supervise(root, profile, *, real=False, providers="codex", backend=None, fro
             try:
                 log = (state / "runtime/backend.log").open("a")
                 logs.append(log)
-                args = backend_command(py, backend, reload if reload is not None else profiles()[profile]["reload"],
-                                       [d for d in (root / ".yiren", state) if d.is_dir()])
+                reloading = reload if reload is not None else profiles()[profile]["reload"]
+                if reloading:
+                    # Packaging writes a full Python runtime under output/; uvicorn only excludes
+                    # directories that exist when it starts, so create the (ignored) folder first.
+                    (root / "output").mkdir(exist_ok=True)
+                args = backend_command(py, backend, reloading,
+                                       [d for d in (root / ".yiren", state, root / "output") if d.is_dir()])
                 children.append(subprocess.Popen(args, cwd=root, env=env, stdout=log, stderr=log,
                                                        stdin=subprocess.DEVNULL, start_new_session=True))
                 if not backend_only:
@@ -177,11 +216,30 @@ def supervise(root, profile, *, real=False, providers="codex", backend=None, fro
         if open_browser and not backend_only:
             import webbrowser
             webbrowser.open(f"http://127.0.0.1:{frontend}")
+        if limit: print(f"Idle stop: after {limit} min without requests and with no unfinished work", flush=True)
+        next_idle_check = time.monotonic() + IDLE_CHECK_SECONDS
         try:
             while True:
                 for idx, c in enumerate(children):
                     if c.poll() is not None:
                         raise EnvironmentError(f"Managed service {idx} (PID {c.pid}) exited unexpectedly with code {c.poll()}")
+                if limit and not stopping and time.monotonic() >= next_idle_check:
+                    next_idle_check = time.monotonic() + IDLE_CHECK_SECONDS
+                    try:
+                        idle = idle_for(backend, limit)
+                        if idle is None:
+                            print("Idle stop unavailable: this checkout's backend does not report idle time", flush=True)
+                            limit = None
+                        elif idle:
+                            # Same authenticated drain as `env.sh stop`; work that appeared meanwhile wins (409).
+                            request(backend, "/api/runtime/drain", token=token)
+                            record["stopped_reason"] = "idle"
+                            print(f"Stopping: idle for {record['idle_stop_minutes']} min with no unfinished work", flush=True)
+                            break
+                    except urllib.error.HTTPError as exc:
+                        if exc.code != 409: raise
+                    except (OSError, ValueError, KeyError, urllib.error.URLError):
+                        pass  # A reloading backend answers on the next check; exits are caught above.
                 if stopping:
                     try:
                         request(backend, "/api/runtime/drain", token=token)

@@ -20,9 +20,25 @@ def activity(repository) -> dict:
         return activity_counts(db)
 
 
+# Environment tooling marks its own polls; a visible page's health refresh still counts as use.
+PROBE_HEADER = "X-AgentClub-Probe"
+
+
+def is_bookkeeping(request: Request) -> bool:
+    """Lifecycle control and tooling probes are not user activity."""
+    return request.url.path.startswith("/api/runtime/") or PROBE_HEADER in request.headers
+
+
+def idle_seconds(app) -> int:
+    return max(0, int(time.time() - app.state.last_request_at))
+
+
 def install(app, repository, settings):
     app.state.draining = False
     app.state.drain_pending = False
+    # Wall-clock time of the last request that was not lifecycle bookkeeping. Managed
+    # development supervisors poll /api/health and stop an environment nobody uses.
+    app.state.last_request_at = time.time()
     # Test clients and embedded callers may use different event loops. Admission
     # bookkeeping is thread-safe and never holds a lock across an await.
     lock = threading.Lock()
@@ -32,6 +48,15 @@ def install(app, repository, settings):
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
+        counted = not is_bookkeeping(request)
+        if counted: app.state.last_request_at = time.time()
+        try:
+            return await admit(request, call_next)
+        finally:
+            # A slow request counts as use until its response is ready.
+            if counted: app.state.last_request_at = time.time()
+
+    async def admit(request: Request, call_next):
         nonlocal in_flight
         if request.method in {"GET", "HEAD", "OPTIONS"} or request.url.path in {"/api/runtime/drain", "/api/runtime/resume"}:
             return await call_next(request)

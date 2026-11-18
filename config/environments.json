@@ -1,6 +1,6 @@
 {
   "local": {"backend_port": 8000, "frontend_port": 5173, "reload": false},
-  "development": {"backend_port": 8100, "frontend_port": 5174, "reload": true},
+  "development": {"backend_port": 8100, "frontend_port": 5174, "reload": true, "idle_stop_minutes": 120, "max_running": 4},
   "test": {"backend_port": 8200, "frontend_port": 5175, "reload": false},
   "alpha": {"backend_port": 8300, "frontend_port": 5176, "reload": false},
   "runtime": {"backend_port": 8000, "frontend_port": 5173, "reload": false}

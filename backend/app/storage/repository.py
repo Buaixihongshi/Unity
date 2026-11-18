@@ -17,7 +17,8 @@ from backend.app.domain.maintenance import (
     ValidationResult,
 )
 from backend.app.domain.models import (
-    Conversation, Message, MessageRole, Mission, MissionEvent, is_provider_verification_mission,
+    Conversation, Message, MessageRole, Mission, MissionEvent, format_iso_utc,
+    is_provider_verification_mission,
 )
 
 
@@ -299,7 +300,8 @@ class Repository:
                 return self.add_event(mission_id, event_type, payload, db=connection)
 
         cursor = db.execute(
-            "INSERT INTO events (mission_id, event_type, payload, created_at) VALUES (?, ?, ?, datetime('now'))",
+            "INSERT INTO events (mission_id, event_type, payload, created_at) "
+            "VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (mission_id, event_type, json.dumps(payload, ensure_ascii=False)),
         )
         return str(cursor.lastrowid)
@@ -569,7 +571,7 @@ class Repository:
                 return self.add_maintenance_event(run_id, event_type, payload, db=connection)
         cursor = db.execute(
             "INSERT INTO maintenance_events (run_id, event_type, payload, created_at) "
-            "VALUES (?, ?, ?, datetime('now'))",
+            "VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (run_id, event_type, json.dumps(payload, ensure_ascii=False)),
         )
         return str(cursor.lastrowid)
@@ -586,7 +588,7 @@ class Repository:
                 "id": str(row["id"]),
                 "event_type": row["event_type"],
                 "payload": json.loads(row["payload"]),
-                "created_at": row["created_at"],
+                "created_at": format_iso_utc(row["created_at"]),
             }
             for row in rows
         ]

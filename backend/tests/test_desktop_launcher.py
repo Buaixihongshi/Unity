@@ -124,6 +124,17 @@ def test_packaging_keeps_its_interpreter_off_the_users_path():
     assert installs and all("--no-bin" in line for line in installs)
 
 
+def test_packaging_pins_bytecode_env_before_the_bundled_interpreter_runs():
+    """Issue #60: interpreter-auto-written .pyc embed absolute build paths and
+    compileall skips them as fresh (mtime match), so they survive into the
+    privacy scan; an inherited PYTHONPYCACHEPREFIX would additionally redirect
+    even compileall's own output out of the bundle."""
+    lines = (Path(__file__).resolve().parents[2] / "scripts/package-macos.sh").read_text().splitlines()
+    before_first_run = lines[:next(i for i, line in enumerate(lines) if '"$PY"' in line)]
+    assert any(line.strip() == "export PYTHONDONTWRITEBYTECODE=1" for line in before_first_run)
+    assert any(line.strip() == "unset PYTHONPYCACHEPREFIX" for line in before_first_run)
+
+
 def test_macos_status_mobius_path_covers_both_loops_and_shares_cruise():
     """Issue #115: macOS UnityApp.swift cruise path must cover both loops and share mobiusPath."""
     import re
@@ -152,3 +163,10 @@ def test_macos_status_mobius_path_covers_both_loops_and_shares_cruise():
     assert ".cruise.active" in content
     assert "@media (prefers-reduced-motion: reduce)" in content
     assert ".cruise.active { display: none !important; }" in content
+
+
+def test_native_shell_owns_drain_token_without_leaving_a_second_copy(tmp_path):
+    token = "isolated-native-test-token"
+    env = desktop.desktop_env(tmp_path / "app", tmp_path / "support", {"UNITY_LIFECYCLE_TOKEN": token}, None)
+    assert env["YIREN_LIFECYCLE_TOKEN"] == token
+    assert "UNITY_LIFECYCLE_TOKEN" not in env

@@ -109,7 +109,7 @@ def summarize_turn_progress(events: Iterable, turn_id: str, *,
                  "at": at.isoformat() if at else None}
         stopped = _aware(stopped_at)
         if at and stopped:
-            entry["seconds_before_stop"] = max(0, int((stopped - at).total_seconds()))
+            entry["seconds_before_stop"] = max(0, int(round((stopped - at).total_seconds())))
         summary["last_activity"] = entry
     return summary
 
