@@ -157,6 +157,7 @@ def _false_partner_confirmation(turn: Turn) -> Optional[str]:
         return None
     from backend.app.domain.agent_registry import get_agent_registry
     registry = get_agent_registry()
+    patterns = []
     for target in turn.a2a_failed_targets:
         profile = next((a for a in registry.all() if a.id == target), None)
         names = {target}
@@ -169,14 +170,44 @@ def _false_partner_confirmation(turn: Turn) -> Optional[str]:
             + partner + r"(?:确认|回复|核实)了|"
             + r"(?:收到|拿到)(?:了)?" + partner + r"(?:的)?(?:确认|回复)"
         )
-        # Remove only the waiting span before splitting clauses. Skipping the
-        # entire sentence would also hide a separate completed confirmation.
-        reply = _WAIT_PLAN.sub("", turn.reply)
-        for sentence in _sentences(re.sub(r"[，,；;]", "。", reply), min_length=1):
-            if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
-                continue
-            if any(not _negated(sentence, m) for m in pattern.finditer(sentence)):
-                return target
+        patterns.append((target, pattern))
+
+    # Keep natural-sentence boundaries from the original text: deleting a later
+    # "等…之后" span must not erase the boundary of a new waiting structure.
+    sentences = _sentences(turn.reply, min_length=1)
+    clauses = [_sentences(re.sub(r"[，,；;]", "。", s), min_length=1) for s in sentences]
+    endpoint = re.compile(r"之后|(?:稍|随)?后再")
+    anchored = [False] * len(sentences)
+    following_anchor = False
+    for index in range(len(sentences) - 1, -1, -1):
+        anchored[index] = following_anchor or any(
+            endpoint.search(clause)
+            and not any(p.search(clause) for _, p in patterns)
+            for clause in clauses[index]
+        )
+        # The current natural sentence belongs to the previous search window
+        # only if it does not begin a new waiting structure.
+        following_anchor = anchored[index] if not sentences[index].startswith("等") else False
+
+    for target, pattern in patterns:
+        for index, raw in enumerate(sentences):
+            first = clauses[index][0] if clauses[index] else ""
+            # Preserve the existing local deletion; the new exemption applies
+            # only to an unchanged first clause, never text exposed by deletion.
+            reply = _WAIT_PLAN.sub("", raw)
+            for clause_index, sentence in enumerate(
+                _sentences(re.sub(r"[，,；;]", "。", reply), min_length=1)
+            ):
+                if _PLAN.search(sentence) or re.search(r"等.*(?:之后|后再)", sentence):
+                    continue
+                for match in pattern.finditer(sentence):
+                    if _negated(sentence, match):
+                        continue
+                    if (clause_index == 0 and sentence == first and raw.startswith("等")
+                            and anchored[index]
+                            and not _CONTRAST.search(sentence[max(0, match.start() - 20):match.start()])):
+                        continue
+                    return target
     return None
 
 

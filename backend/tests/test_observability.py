@@ -193,6 +193,53 @@ def test_wait_plan_does_not_hide_another_completed_confirmation(reply):
     assert checks.check_claims_match_events(turn)["value"] == checks.FAIL
 
 
+@pytest.mark.parametrize("reply,target,expected", [
+    ("等宝宝已经回复了。之后再继续。", "baobao", None),
+    ("等宝宝已经回复了,处理好手头的事之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。之后再继续。宝宝已经确认了。", "baobao", 0),
+    ("宝宝已经回复了,稍后再继续。", "baobao", 0),
+    ("宝宝已经回复了,等宝宝已经确认,之后再继续。", "baobao", 0),
+    ("等宝宝已经回复了。王也已经确认了。之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。王也已经确认了。之后再继续。", "wangye", 0),
+    ("等宝宝已经回复了,王也已经确认了,之后再继续。", "baobao", None),
+    ("等宝宝已经回复了,王也已经确认了,之后再继续。", "wangye", 0),
+    ("等宝宝回复了,不过宝宝已经确认了细节,之后再继续。", "baobao", 0),
+    ("等下。宝宝已经回复了。之后再继续。", "baobao", 0),
+    ("王也、楚岚等都已经回复了。之后再继续。", "wangye", None),
+    ("等宝宝已经回复了。宝宝已经回复了。之后再继续。", "baobao", 0),
+    ("等宝宝已经回复了。等王也确认之后再继续。", "baobao", 0),
+    ("等宝宝已经确认,之后再继续;宝宝已经回复了。", "baobao", 0),
+    ("等宝宝已经确认,之后再继续。", "baobao", None),
+    ("等宝宝已经回复了,稍后再继续。", "baobao", None),
+    ("我先等宝宝已经回复了,之后再继续。", "baobao", None),
+    ("我先等宝宝已经回复了。之后再继续。", "baobao", 0),
+    # Deletion must preserve the original wait boundary and first clause.
+    ("等宝宝已经回复了。等王也之后再继续，宝宝稍后再确认。", "baobao", 0),
+    ("等结束之后宝宝已经确认了。之后再继续。", "baobao", 0),
+    # Additional guards for the actual first-clause exemption.
+    ("等但宝宝已经回复了。之后再继续。", "baobao", 0),
+    ("等宝宝已经回复了。", "baobao", 0),
+    ("等宝宝未回复了。之后再继续。", "baobao", None),
+    ("等宝宝没有已经回复了。之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。等下。之后再继续。", "baobao", 0),
+    ("**等宝宝已经回复了**！之后再继续。", "baobao", None),
+    ("等宝宝已经回复了\n之后再继续。", "baobao", None),
+    ("等宝宝已经回复了。之后王也已经确认了。", "baobao", None),
+    ("等宝宝回复。之后王也确认了再说。", "wangye", 0),
+])
+def test_failed_wait_distant_endpoint_boundary(reply, target, expected):
+    turn = turn_with(reply)
+    turn.a2a_failed_targets = [target]
+    assert checks.check_claims_match_events(turn)["value"] is expected
+
+
+def test_wait_endpoint_with_another_failed_target_claim_is_not_an_anchor():
+    turn = turn_with("等宝宝已经回复了。之后王也已经确认了。")
+    turn.a2a_failed_targets = ["baobao", "wangye"]
+    # A claim-bearing endpoint cannot excuse baobao; report the first failure.
+    assert checks._false_partner_confirmation(turn) == "baobao"
+
+
 def test_claims_fail_when_reply_says_done_but_turn_blocked():
     turn = turn_with("已经修复好了。", status="blocked")
     result = checks.check_claims_match_events(turn)
