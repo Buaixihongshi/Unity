@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronRight, Copy, RefreshCw } from "lucide-react";
 import { useObservabilityOverview, type ObservabilityWindow } from "../hooks/useObservabilityOverview";
 import { fetchObservabilityTurn } from "../lib/api";
 import { formatAgentName } from "../lib/missionView";
@@ -449,6 +449,35 @@ function StepRow({ step }: { step: ObservabilityStep }) {
   );
 }
 
+function MissionId({ id }: { id: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+
+  async function copy() {
+    setCopyState("copying");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(id);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  return (
+    <div className="obsv-mission-id">
+      <span className="obsv-muted">Mission ID</span>
+      <code>{id}</code>
+      <button type="button" onClick={() => void copy()} disabled={copyState === "copying"}
+        aria-label="复制 Mission ID">
+        <Copy size={12} aria-hidden="true" />复制 ID
+      </button>
+      <span role="status" className={copyState === "failed" ? "obsv-bad" : "obsv-muted"}>
+        {copyState === "copied" ? "已复制" : copyState === "failed" ? "复制失败，请选中 ID 手动复制。" : ""}
+      </span>
+    </div>
+  );
+}
+
 function TurnDetail({ detail, loading, error, onRetry }: {
   detail: ObservabilityTurnDetailPayload | null;
   loading: boolean;
@@ -486,6 +515,7 @@ function TurnDetail({ detail, loading, error, onRetry }: {
           ) : null}
         </div>
         <p className="obsv-muted obsv-turn-mission">{detail.mission.title}</p>
+        <MissionId key={detail.mission.id} id={detail.mission.id} />
         <div className="obsv-tags">{turn.checks.map((check) => <CheckTag key={check.name} check={check} full />)}</div>
       </div>
 

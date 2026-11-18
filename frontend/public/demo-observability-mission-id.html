@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>观测单回合详情 Mission ID 视觉与交互提案 | 王也</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #fdfbf7;
+      --paper-soft: #f5f1e8;
+      --ink: #18191a;
+      --ink-muted: #6e6b65;
+      --ink-line: #dfdeda;
+      --surface: #ffffff;
+      --sage: #7ba79d;
+      --sage-soft: rgba(123, 167, 157, 0.16);
+      --danger: #cf4f4f;
+      --danger-soft: rgba(207, 79, 79, 0.12);
+      --font-body: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-body);
+      min-height: 100vh;
+      padding: 32px 24px;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 820px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .memo-card {
+      background: var(--paper-soft);
+      border: 1px solid var(--ink-line);
+      border-radius: 6px;
+      padding: 16px 20px;
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+    .memo-card h1 {
+      font-size: 1.05rem;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .memo-card p {
+      color: var(--ink-muted);
+      margin-bottom: 6px;
+    }
+    .memo-card p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* 真实组件还原 */
+    .preview-box {
+      background: var(--surface);
+      border: 1px solid var(--ink-line);
+      border-radius: 6px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .preview-label {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--ink-muted);
+    }
+
+    .obsv-panel {
+      padding: 14px 16px;
+      border: 1px solid var(--ink-line);
+      border-radius: 4px;
+      background: var(--paper-soft);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .obsv-turn-title {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .obsv-turn-title strong {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+    .obsv-muted {
+      color: var(--ink-muted);
+      font-size: 0.74rem;
+    }
+    .obsv-tag {
+      font-size: 0.68rem;
+      padding: 1px 6px;
+      border-radius: 3px;
+      border: 1px solid currentColor;
+    }
+    .obsv-tag--ok {
+      background: var(--sage-soft);
+      color: #3b6e64;
+    }
+
+    .obsv-turn-facts {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      color: var(--ink-muted);
+      font-size: 0.74rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .obsv-turn-mission {
+      margin: 0;
+      font-size: 0.74rem;
+      overflow-wrap: anywhere;
+      color: var(--ink-muted);
+    }
+
+    /* 核心改动：Mission ID 栏 */
+    .obsv-mission-id {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px 8px;
+      min-width: 0;
+      font-size: 0.7rem;
+    }
+    .obsv-mission-id code {
+      min-width: 0;
+      font-family: var(--font-mono);
+      background: rgba(0,0,0,0.03);
+      padding: 2px 6px;
+      border-radius: 3px;
+      border: 1px solid var(--ink-line);
+      white-space: normal;
+      overflow-wrap: anywhere;
+      user-select: text;
+    }
+    .obsv-mission-id button {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border: 1px solid var(--ink-line);
+      border-radius: 3px;
+      background: var(--paper-soft);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .obsv-mission-id button:hover {
+      background: #ece7dc;
+    }
+    .obsv-mission-id button:focus-visible {
+      outline: 2px solid var(--ink);
+      outline-offset: 2px;
+    }
+    .obsv-bad {
+      color: var(--danger);
+      font-size: 0.7rem;
+    }
+
+    .obsv-tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .demo-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .demo-btn {
+      padding: 6px 12px;
+      background: var(--paper-soft);
+      border: 1px solid var(--ink-line);
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="memo-card">
+      <h1>💡 观测回合详情 Mission ID 设计手稿 · 王也</h1>
+      <p><strong>痛点：</strong>张楚岚让用户提 issue 或排障时丢 Mission ID，但面板上只有任务标题，用户要审查或提报得去别处查，特别别扭。</p>
+      <p><strong>取舍与细节：</strong>
+        1. 紧随任务标题之后放置，形成【标题 - ID】的认知归属；<br/>
+        2. 采用等宽代码字体内嵌微框，保留 <code>user-select: text</code> 与折行，支持随时划选；<br/>
+        3. 配备极简「复制 ID」微按钮与内联状态反馈（已复制 / 失败友好提示），点一下直接能粘贴发给排障伙伴；<br/>
+        4. 视觉克制，不破坏单回合卡片的纸墨层级，不抢步骤正文注意力。
+      </p>
+    </div>
+
+    <div class="preview-box">
+      <div class="preview-label">交互预览（可点击体验真实交互）：</div>
+      
+      <div class="obsv-panel obsv-turn-meta">
+        <div class="obsv-turn-title">
+          <strong>chulan</strong>
+          <span class="obsv-muted">codex · gpt-5.4</span>
+          <span class="obsv-tag obsv-tag--ok">成功</span>
+        </div>
+        <div class="obsv-turn-facts">
+          <span>31s</span>
+          <span>183.6k tok</span>
+          <span>$0.27</span>
+          <span>1 步</span>
+        </div>
+        <p class="obsv-muted obsv-turn-mission">任务：为观测功能梳理定位指引并补充排障入口</p>
+        
+        <div class="obsv-mission-id">
+          <span class="obsv-muted">Mission ID</span>
+          <code id="sample-id">m_20261118_chulan_observability_flow_98f2</code>
+          <button type="button" id="copy-btn" aria-label="复制 Mission ID">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            复制 ID
+          </button>
+          <span id="copy-status" class="obsv-muted" role="status"></span>
+        </div>
+
+        <div class="obsv-tags">
+          <span class="obsv-tag obsv-tag--ok">声明一致: 通过</span>
+          <span class="obsv-tag obsv-tag--ok">工具错误恢复: 通过</span>
+        </div>
+      </div>
+
+      <div class="demo-actions">
+        <button class="demo-btn" onclick="toggleLength()">切换长/短 ID 测试折行</button>
+        <button class="demo-btn" onclick="simulateFail()">模拟剪贴板异常降级</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const sampleId = document.getElementById('sample-id');
+    const copyBtn = document.getElementById('copy-btn');
+    const copyStatus = document.getElementById('copy-status');
+
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+        await navigator.clipboard.writeText(sampleId.innerText);
+        copyStatus.innerText = '已复制';
+        copyStatus.className = 'obsv-muted';
+        setTimeout(() => { copyStatus.innerText = ''; }, 2000);
+      } catch (e) {
+        copyStatus.innerText = '复制失败，请选中 ID 手动复制。';
+        copyStatus.className = 'obsv-bad';
+      }
+    });
+
+    let isLong = false;
+    function toggleLength() {
+      isLong = !isLong;
+      sampleId.innerText = isLong 
+        ? 'm_super_long_mission_identifier_for_stress_testing_text_wrapping_and_compact_layout_20261118_abc123456789'
+        : 'm_20261118_chulan_observability_flow_98f2';
+    }
+
+    function simulateFail() {
+      copyStatus.innerText = '复制失败，请选中 ID 手动复制。';
+      copyStatus.className = 'obsv-bad';
+    }
+  </script>
+</body>
+</html>
