@@ -169,6 +169,10 @@ def test_claims_ignore_plans_and_denials():
     "等宝宝已经确认，之后再继续。",
     "等宝宝已经确认, 后再继续。",
     "等宝宝已经确认；之后再继续。",
+    "等宝宝已经回复了，稍后再继续。",
+    "等宝宝已经回复了, 随后再继续。",
+    "等宝宝已经确认稍后再继续。",
+    "等宝宝已经确认；随后再继续。",
 ])
 def test_failed_wait_confirmation_plan_is_not_a_completed_claim(reply):
     turn = turn_with(reply)
@@ -180,6 +184,8 @@ def test_failed_wait_confirmation_plan_is_not_a_completed_claim(reply):
     "等宝宝已经确认，之后再继续；宝宝已经回复了。",
     "宝宝已经回复了，等宝宝已经确认，之后再继续。",
     "等宝宝已经确认。之后再继续，宝宝已经回复了。",
+    "等宝宝已经回复了，稍后再继续；宝宝已经确认了。",
+    "宝宝已经回复了，等宝宝已经确认，随后再继续。",
 ])
 def test_wait_plan_does_not_hide_another_completed_confirmation(reply):
     turn = turn_with(reply)
