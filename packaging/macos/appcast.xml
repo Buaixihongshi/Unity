@@ -3,14 +3,14 @@
   <channel>
     <title>Unity updates</title>
     <item>
-      <title>Unity 1.1.1</title>
-      <link>https://github.com/Buaixihongshi/Unity/releases/tag/v1.1.1</link>
-      <sparkle:version>87</sparkle:version>
-      <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
+      <title>Unity 1.1.2</title>
+      <link>https://github.com/Buaixihongshi/Unity/releases/tag/v1.1.2</link>
+      <sparkle:version>96</sparkle:version>
+      <sparkle:shortVersionString>1.1.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>12.0.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <enclosure url="https://github.com/Buaixihongshi/Unity/releases/download/v1.1.1/Unity-1.1.1-arm64.dmg"
-        sparkle:edSignature="pCJdKFAuuxln/iqPnGq/DauZjMlglXB3FKGSCIpDCqWeID4v59gw0/0mqbz3+hYVwuI38XqQ+bJnR/NxeKDRDQ==" length="31666755" type="application/octet-stream" />
+      <enclosure url="https://github.com/Buaixihongshi/Unity/releases/download/v1.1.2/Unity-1.1.2-arm64.dmg"
+        sparkle:edSignature="p2j1f8I4k52eKpRQt0rPJ59dzUtUTz8hONHX4LtilktJuF0Tu5Dja+kqrAJQvrYmuvlmEefu7H1yDRvxNUTyDA==" length="31902796" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
