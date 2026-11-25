@@ -69,51 +69,11 @@ Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没�
 
 ## 项目架构
 
-```mermaid
-flowchart TD
-    subgraph Client["交互层"]
-        UI["桌面 / 网页客户端<br/>(React + Vite · macOS MenuBar)"]
-        Room["统一工作群<br/>(@点名 · /discuss 讨论 · 任务协作)"]
-        UI --> Room
-    end
-
-    subgraph Host["FastAPI 宿主编排内核"]
-        Orchestrator["任务与执行调度<br/>(MissionRunner · 自适应工作)"]
-        A2A["A2A 协同协议<br/>(invoke_agent · 就近兑现 · wait_reply · 防环路)"]
-        Context["统一上下文装配<br/>(assembly.py · 分层预算裁剪 · 原文精确补读)"]
-        ObservabilityEngine["回合观测与检查引擎<br/>(纯函数读时计算 · 行为审计 · 覆盖率)"]
-
-        Room --> Orchestrator
-        Orchestrator <--> A2A
-        Orchestrator --> Context
-        Orchestrator -.-> ObservabilityEngine
-    end
-
-    subgraph Adapters["Provider Router & MCP 工具层"]
-        MCP["Unity 统一 MCP 服务<br/>(read_context · write_artifact · save_checkpoint · memory)"]
-        Providers["模型与 CLI 适配器<br/>(Codex CLI · Claude Code · Antigravity CLI · 自定义 API)"]
-
-        Context --> MCP
-        Orchestrator --> Providers
-        MCP <--> Providers
-    end
-
-    subgraph Storage["数据与状态持久化"]
-        MemFile["角色长期记忆<br/>(Markdown 文件为权威)"]
-        DB["SQLite 索引与会话状态<br/>(记忆索引 · 短期检查点 · 任务快照 · 观测事件)"]
-        Worktrees["独立任务工作树<br/>(task-worktrees 独立目录与分支)"]
-
-        MCP <--> MemFile
-        MCP <--> DB
-        Orchestrator <--> DB
-        Providers --> Worktrees
-    end
-
-    subgraph EvalSystem["离线可评测体系 (EVL)"]
-        EvalRunner["A/B/C/D 配对对照评测<br/>(Single vs Multi-Agent · PR Replay · Rubric 评分)"]
-        EvalRunner -.-> Providers
-    end
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/unity-architecture-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/unity-architecture-light.svg">
+  <img alt="Unity 系统架构图" src="docs/images/unity-architecture-light.svg" width="100%">
+</picture>
 
 ### 核心机制实现
 
