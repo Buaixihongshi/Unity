@@ -99,7 +99,7 @@ def connection_views(settings, data: dict | None = None) -> list[dict]:
                           base_url=None, enabled=enabled, has_key=False,
                           timeout=settings.cli_timeout, allow_private=False))
     for cid, connection in data.get("connections", {}).items():
-        views.append(dict(id=cid, kind="api", has_key=bool(read_key(settings, connection)),
+        views.append(dict(id=cid, kind="api", image_input=connection.get("image_input", "native"), has_key=bool(read_key(settings, connection)),
                           **{key: connection[key] for key in
                              ("name", "protocol", "base_url", "enabled", "timeout", "allow_private")}))
     return views
@@ -113,7 +113,7 @@ def prepare_connections(existing: dict, patches: dict) -> tuple[dict, dict[str, 
         if not re.fullmatch(r"api-[A-Za-z0-9_-]{1,100}", cid):
             raise ValueError("API connection ID must start with api-")
         allowed = {"name", "protocol", "base_url", "enabled", "timeout", "allow_private",
-                   "key_action", "api_key", "delete"}
+                   "key_action", "api_key", "delete", "image_input"}
         if set(patch) - allowed:
             raise ValueError("unknown connection field")
         if patch.get("delete") is True:
@@ -121,12 +121,14 @@ def prepare_connections(existing: dict, patches: dict) -> tuple[dict, dict[str, 
             continue
         previous = result.get(cid, {})
         item = dict(name=cid, protocol="openai_responses", base_url="", enabled=True,
-                    timeout=120, allow_private=False)
+                    timeout=120, allow_private=False, image_input="native")
         item.update(previous)
         item.update({key: value for key, value in patch.items() if key in
-                     {"name", "protocol", "base_url", "enabled", "timeout", "allow_private"}})
+                     {"name", "protocol", "base_url", "enabled", "timeout", "allow_private", "image_input"}})
         if not isinstance(item["name"], str) or not 1 <= len(item["name"].strip()) <= 100:
             raise ValueError("invalid connection name")
+        if item["image_input"] not in {"native", "none"}:
+            raise ValueError("unsupported image input capability")
         if item["protocol"] not in PROTOCOLS:
             raise ValueError("unsupported connection protocol")
         if type(item["enabled"]) is not bool or type(item["allow_private"]) is not bool:

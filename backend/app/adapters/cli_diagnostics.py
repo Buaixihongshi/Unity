@@ -20,6 +20,8 @@ _CREDENTIAL = re.compile(
 def _redact(text: str) -> str:
     text = re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", text)
     text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[REDACTED]", text)
+    text = re.sub(r'data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+', 'data:image/[REDACTED]', text)
+    text = re.sub(r'("(?:data|image_data)"\s*:\s*")[A-Za-z0-9+/=]{32,}("?)', r'\1[IMAGE_REDACTED]\2', text)
     text = _CREDENTIAL.sub(r"\1[REDACTED]", text)
     return re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL]", text)
 

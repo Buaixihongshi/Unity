@@ -237,6 +237,9 @@ class DeliberationCLIAdapter:
             return TurnOutcome(status=TurnStatus.BLOCKED, summary="isolation_not_supported for this CLI")
         with tempfile.TemporaryDirectory(prefix="acv2-", dir="/tmp") as temp, ExitStack() as cleanup:
             directory = Path(temp).resolve()
+            from backend.app.attachments.delivery import prepare, cli_input
+            mode = "native" if basename in {"claude", "codex"} else "path"
+            prompt, images = prepare(tools, mission_id, agent_id, turn_id, provider_id, prompt, mode, directory)
             with mcp_bridge(directory, tools, mission_id, agent_id, turn_id, provider_id,
                             on_tool_return=lambda: progress.record_result()) as server:
                 env = {k: v for k, v in os.environ.items() if not k.startswith("YIREN_")}
@@ -340,6 +343,8 @@ class DeliberationCLIAdapter:
                         loopback_ports=loopback_ports))
                 command = ["/usr/bin/sandbox-exec", "-f", str(profile), provider.command,
                            *prompt_arguments(basename, args, prompt)]
+                command, image_stdin = cli_input(command, basename, images, directory, prompt)
+                input_stream = cleanup.enter_context(image_stdin.open('rb')) if image_stdin else subprocess.DEVNULL
                 cwd = Path(self.work_context['workspace_root']) if self.work_context else directory
                 mission = tools.repository.get_mission(mission_id)
                 record = TurnRecord(tools.repository.database_path, mission_id=mission_id, turn_id=turn_id,
@@ -351,7 +356,7 @@ class DeliberationCLIAdapter:
                               isolation='macos-sandbox+host-mcp-bridge', sandbox_profile=profile.read_text(),
                               model=self.model)
                 try:
-                    proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                    proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=input_stream,
                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
                 except OSError as exc:
                     record.finish(error=str(exc))

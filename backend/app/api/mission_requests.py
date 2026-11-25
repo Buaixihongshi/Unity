@@ -35,6 +35,7 @@ class DiscussionRequest(BaseModel):
 
 class MissionRequest(BaseModel):
     goal: str
+    attachment_ids: Optional[list[str]] = None
     skill: Optional[Literal['discuss']] = None
     title: Optional[str] = None
     target_agent_id: Optional[str] = None
@@ -89,7 +90,7 @@ class MissionRequest(BaseModel):
                 raise ValueError('Roundtable requires discussion.participant_ids')
             if self.target_agent_id is not None or self.target_agent_ids is not None:
                 raise ValueError('Use discussion.participant_ids for roundtables')
-            if not self.goal.strip():
+            if not self.goal.strip() and not self.attachment_ids:
                 raise ValueError('Discussion goal must not be empty')
             if self.discussion.protocol == 'deliberation_v2' and len(self.goal) > 8000:
                 raise ValueError('V2 goal exceeds 8000 characters; provide supporting material separately')
@@ -118,7 +119,7 @@ def ensure_available(repo, conversation):
 def _normalize_legacy_fingerprint(fingerprint):
     """Only V1 records predate these two discussion default fields."""
     fingerprint = dict(fingerprint)
-    for optional in ('work_mode', 'revises_message_id'):
+    for optional in ('work_mode', 'revises_message_id', 'attachment_ids'):
         if fingerprint.get(optional) is None:
             fingerprint.pop(optional, None)
     discussion = fingerprint.get('discussion')
@@ -135,6 +136,8 @@ def create_requested_mission(repo, settings, payload, conversation_id=None):
     scope = f'conversation:{conversation_id}' if conversation_id else 'new_conversation'
     # Existing idempotency records predate the optional skill field.
     excluded = {'conversation_id', 'skill'} if payload.skill is None else {'conversation_id'}
+    if payload.attachment_ids is None:
+        excluded.add('attachment_ids')
     if payload.work_mode is None:
         excluded.add('work_mode')
     if payload.revises_message_id is None:
@@ -190,8 +193,10 @@ def create_requested_mission(repo, settings, payload, conversation_id=None):
         repo.create_mission(mission)
         mission = extension_points.first('mission_created', repo, settings, payload, mission, conversation,
                                          targets, registry) or mission
+        attachment_ids = payload.attachment_ids if payload.attachment_ids is not None else (original.attachments if original else [])
         repo.add_message(Message(id=f'msg_{uuid4().hex}', mission_id=mission.id, conversation_id=conversation.id,
-                                 role=MessageRole.USER, content=payload.goal))
+                                 role=MessageRole.USER, content=payload.goal, attachments=attachment_ids),
+                         **({"revises_message_id": original.id} if original else {}))
         if original is not None:
             revision.record(repo, mission, original)
         conversation = conversation.model_copy(update={'updated_at': utc_now()})

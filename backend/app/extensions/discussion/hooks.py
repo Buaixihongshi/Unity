@@ -34,10 +34,10 @@ def mission_failed(repo, mission):
 
 def mission_interrupt(repo, mission, payload):
     if is_v2(mission):
-        Deliberation(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id)
+        Deliberation(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id, payload.attachment_ids)
         return True
     if mission.room_mode == 'roundtable':
-        Roundtable(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id)
+        Roundtable(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id, payload.attachment_ids)
         return True
     return False
 

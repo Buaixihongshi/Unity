@@ -18,6 +18,7 @@ import {
 import { ConversationList } from "./ConversationList";
 import { DiscussionSkillStatus } from "./DiscussionSkillStatus";
 import { DiscussionHighlights } from "./DiscussionHighlights";
+import type { ImageAttachmentsController } from "../hooks/useImageAttachments";
 import { MissionComposer } from "./MissionComposer";
 import type { ConfirmedMention } from "../lib/inputConfirmations";
 import { MissionHeader } from "./MissionHeader";
@@ -50,7 +51,9 @@ export function MissionRoomPage(props: {
   onInputChange: (value: string) => void;
   confirmations?: ConfirmedMention[];
   onConfirmationsChange?: (mentions: ConfirmedMention[]) => void;
-  onSubmit: () => void;
+  onSubmit: (attachmentIds?: string[]) => void | Promise<unknown>;
+  images?: ImageAttachmentsController;
+  imageBudgetFull?: boolean;
   hasAutonomousWork?: boolean;
   conversations: ConversationSummary[];
   selectedConversationId?: string;
@@ -148,7 +151,7 @@ export function MissionRoomPage(props: {
     onRequestStop={props.onRequestStop} onContinue={props.onContinueDiscussion} /> : null;
   const composer = <div className="discussion-panels composer-layout-compact">
     {discussionPanel && <div className="composer-discussion-status">{discussionPanel}</div>}
-    <MissionComposer value={props.input} busy={props.busy} hasActiveMission={hasActiveMission}
+    <MissionComposer images={props.images} imageBudgetFull={props.imageBudgetFull} value={props.input} busy={props.busy} hasActiveMission={hasActiveMission}
       disabled={props.conversationScope === "archived"} submitLabel={submitLabel} submitDisabled={props.stopping || chatRunning}
       mentionsEnabled={!(hasActiveMission && discussion)} skillsEnabled={props.discussionEnabled ?? false}
       onChange={props.onInputChange}

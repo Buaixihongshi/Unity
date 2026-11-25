@@ -1,4 +1,4 @@
-"""Text-only API adapter. It never exposes terminal/file tools to the model."""
+"""API adapter with optional image input. It never exposes terminal/file tools to the model."""
 import json
 
 from backend.app import extension_points
@@ -62,7 +62,10 @@ class APITextAdapter(CLIAdapter):
                         pending = pending[n:]
             if not structured:
                 live.mark_active(mission_id, turn_id)
-            stream_text(self.connection, key, self.model, prompt, receive, cancelled)
+            from backend.app.attachments.delivery import prepare
+            mode = self.connection.get('image_input', 'native')
+            prompt, images = prepare(tools, mission_id, agent_id, turn_id, provider_id, prompt, mode)
+            stream_text(self.connection, key, self.model, prompt, receive, cancelled, **({'images': images} if images else {}))
             if cancelled():
                 raise APIError('stopped')
             text = ''.join(chunks).replace(key, '[redacted]').strip()

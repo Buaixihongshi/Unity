@@ -1,3 +1,5 @@
+import { ImageDrafts } from "./ImageAttachments";
+import type { ImageAttachmentsController } from "../hooks/useImageAttachments";
 import { PersonaPortrait } from "./PersonaPortrait";
 import {
   useEffect,
@@ -59,7 +61,9 @@ export function MissionComposer(props: {
   confirmations?: ConfirmedMention[];
   /** 浮层确认的 @提及实体范围（含编辑失效），供发送链路消费，避免全文反解析路由。 */
   onConfirmationsChange?: (mentions: ConfirmedMention[]) => void;
-  onSubmit: () => void;
+  onSubmit: (attachmentIds?: string[]) => void | Promise<unknown>;
+  images?: ImageAttachmentsController;
+  imageBudgetFull?: boolean;
   submitLabel?: string;
   submitDisabled?: boolean;
   placeholder?: string;
@@ -77,6 +81,22 @@ export function MissionComposer(props: {
   revising?: boolean;
   onCancelRevise?: () => void;
 }) {
+  const submitRef = useRef(props.onSubmit);
+  submitRef.current = props.onSubmit;
+  const [waitingImages, setWaitingImages] = useState(false);
+  const imageError = props.images?.drafts.some(item => item.status === "error");
+  const hasContent = Boolean(props.value.trim() || props.images?.drafts.length);
+
+  async function send() {
+    if (!hasContent || props.busy || waitingImages || props.disabled || props.submitDisabled || imageError) return;
+    setWaitingImages(true);
+    try {
+      const ids = props.images ? await props.images.ready() : undefined;
+      if (ids === null) return;
+      await submitRef.current(ids);
+    } finally { setWaitingImages(false); }
+  }
+
   const [menu, setMenu] = useState<SuggestionMenu | null>(null);
   const [highlighted, setHighlighted] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -180,20 +200,19 @@ export function MissionComposer(props: {
     if (
       event.key === "Enter" &&
       (event.metaKey || event.ctrlKey) &&
-      props.value.trim() &&
+      hasContent &&
       !props.busy &&
       !props.disabled &&
       !props.submitDisabled
     ) {
       event.preventDefault();
-      props.onSubmit();
+      void send();
     }
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!props.value.trim() || props.busy || props.disabled || props.submitDisabled) return;
-    props.onSubmit();
+    void send();
   }
 
   const submitLabel = props.revising
@@ -201,7 +220,13 @@ export function MissionComposer(props: {
     : props.submitLabel ?? (props.hasActiveMission ? "发送插话" : "发送");
 
   return (
-    <form className="mission-composer" onSubmit={submit}>
+    <form className="mission-composer" onSubmit={submit}
+      onPaste={event => {
+        const files = Array.from(event.clipboardData.files);
+        if (props.images && files.length && !props.disabled && !waitingImages) { event.preventDefault(); if (!props.imageBudgetFull) props.images.add(files); }
+      }}
+      onDragOver={event => { if (props.images && Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = props.disabled || waitingImages || props.imageBudgetFull || (props.images.limits && props.images.drafts.length >= props.images.limits.max_message_images) ? "none" : "copy"; } }}
+      onDrop={event => { if (props.images && event.dataTransfer.files.length) { event.preventDefault(); if (!props.disabled && !waitingImages && !props.imageBudgetFull) props.images.add(Array.from(event.dataTransfer.files)); } }}>
       {showInterruptTargets ? (
         <div className="composer-interrupt-target">
           <label htmlFor="interrupt-target">点名先回应（可选）</label>
@@ -245,7 +270,7 @@ export function MissionComposer(props: {
           ref={textareaRef}
           id="mission-input"
           value={props.value}
-          disabled={props.disabled}
+          disabled={props.disabled || waitingImages}
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={props.disabled ? "归档会话只读；恢复后可继续对话" : props.placeholder ?? (mentionsEnabled ? "说说你的想法，@ 选择伙伴 · ⌘/Ctrl + Enter 发送" : "聊点什么，⌘/Ctrl + Enter 发送")}
@@ -325,11 +350,13 @@ export function MissionComposer(props: {
         <button
           className="composer-send"
           type="submit"
-          disabled={props.disabled || props.busy || props.submitDisabled || !props.value.trim()}
+          disabled={props.disabled || props.busy || waitingImages || props.submitDisabled || !hasContent || imageError}
+          title={imageError ? "请先移除或重试标红的图片" : undefined}
         >
-          {submitLabel}
+          {waitingImages ? (props.images?.drafts.some(item => item.status === "uploading") ? "图片上传中…" : "发送中…") : submitLabel}
         </button>
       </div>
+      {props.images && <ImageDrafts images={props.images} disabled={props.disabled || props.busy || waitingImages} budgetFull={props.imageBudgetFull} />}
     </form>
   );
 }

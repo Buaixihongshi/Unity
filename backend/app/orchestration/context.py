@@ -46,6 +46,8 @@ def build_conversation_context(
         elif msg.role == MessageRole.AGENT and msg.mission_id in answered_old:
             speaker += "（回应的是修改前的说法）"
         text = _WHITESPACE_RUN.sub(" ", msg.content).strip()
+        if msg.attachments:
+            text += " " + " ".join(f"[图片 {aid}，本任务附件]" if msg.mission_id == mission_id else f"[图片 {aid}，之前已提供]" for aid in msg.attachments)
         prefix, suffix = f"{speaker}：", f" [id={msg.id}]"
         budget = min(max_chars_per_message, remaining - len(prefix) - len(suffix) - 1)
         if budget < len("…[已截断]…"):

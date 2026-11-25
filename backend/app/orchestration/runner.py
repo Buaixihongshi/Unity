@@ -816,6 +816,12 @@ class MissionRunner:
                 )
                 return outcome
 
+            from backend.app.attachments.store import AttachmentStore
+            if AttachmentStore(self.repository).for_mission(mission.id):
+                self.repository.add_event(mission.id, 'attachment.delivery_failed', {
+                    'turn_id': turn_id, 'agent_id': agent_id, 'provider_id': provider_id,
+                    'failure_code': outcome.failure_code or 'provider_rejected',
+                })
             last_outcome = outcome
             record_turn_blocked(
                 self.repository,

@@ -34,6 +34,8 @@ def create_app(
     configure_custom_agents(app_settings.config_dir, hub_settings.default_path(app_settings))
     repository = Repository(app_settings.database_path)
     repository.initialize()
+    from backend.app.attachments.store import AttachmentStore
+    AttachmentStore(repository).cleanup()
     from backend.app.storage.execution import ExecutionLedger
     ExecutionLedger(repository).recover()
     extensions.recover(repository, app_settings)
@@ -75,6 +77,14 @@ def create_app(
     async def discussion_error_handler(request, exc):
         return JSONResponse(status_code=exc.status_code, content={'detail': str(exc)})
 
+    from backend.app.attachments.store import AttachmentError
+
+    @app.exception_handler(AttachmentError)
+    async def attachment_error_handler(request, exc):
+        return JSONResponse(status_code=exc.status, content=exc.body)
+
+    from backend.app.api.attachments import build_router as build_attachments_router
+    app.include_router(build_attachments_router(repository))
     app.include_router(build_health_router(app_settings, repository))
     app.include_router(extensions.maintenance_router(app_settings, repository))
     app.include_router(build_agents_router(app_settings))

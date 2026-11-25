@@ -137,6 +137,8 @@ def _conversation_detail(repo: Repository, settings: Settings, conversation: Con
         for mission in missions
         for event in repo.list_events_after(mission.id, 0)
     ]
+    from backend.app.attachments.delivery import annotate
+    annotate(message_events, repo, history_events)
     extension_points.each('annotate_messages', message_events, missions, history_events, repo, None)
     work_status_label = None
     if work_row:
