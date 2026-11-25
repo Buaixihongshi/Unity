@@ -56,7 +56,8 @@ export function useImageAttachments(ensureConversation: () => Promise<string>) {
           ? { ...item, status: 'error', error: error instanceof Error ? error.message : '图片上传失败',
               retryable: !(error instanceof Error && 'status' in error && Number(error.status) < 500) } : item));
       } finally {
-        pending.current.delete(draft.localId);
+        // 恢复草稿会复用 localId；旧请求收尾不能删掉新请求的等待记录。
+        if (pending.current.get(draft.localId)?.abort === abort) pending.current.delete(draft.localId);
       }
     })();
     pending.current.set(draft.localId, { promise, abort });

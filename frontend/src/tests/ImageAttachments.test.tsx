@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MissionComposer } from '../components/MissionComposer';
 import { MessageImages } from '../components/ImageAttachments';
@@ -71,6 +71,32 @@ describe('图片草稿和发送', () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(['att_1']));
     expect(screen.getByLabelText('消息输入')).toHaveValue('');
     expect(screen.queryByRole('button', { name: /移除图片/ })).not.toBeInTheDocument();
+  });
+
+  it.each(['reject', 'resolve'] as const)('取消修订后，旧上传延迟 %s 不影响恢复草稿的上传等待', async settle => {
+    const oldUpload = deferred<Attachment>(), freshUpload = deferred<Attachment>();
+    vi.mocked(uploadAttachment).mockReturnValueOnce(oldUpload.promise).mockReturnValueOnce(freshUpload.promise);
+    const { result } = renderHook(() => useImageAttachments(async () => 'c_1'));
+    await waitFor(() => expect(result.current.limits).toEqual(limits));
+    act(() => result.current.add([png()]));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1));
+    const saved = result.current.snapshot();
+    act(() => result.current.restore([]));
+    expect(vi.mocked(uploadAttachment).mock.calls[0][2]?.aborted).toBe(true);
+    act(() => result.current.restoreDraft(saved));
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      if (settle === 'reject') oldUpload.reject(new Error('延迟取消'));
+      else oldUpload.resolve(attachment('att_stale'));
+    });
+
+    const onReady = vi.fn();
+    let ready!: Promise<string[] | null>;
+    await act(async () => { ready = result.current.ready().then(ids => { onReady(ids); return ids; }); });
+    expect(onReady).not.toHaveBeenCalled();
+    expect(result.current.drafts[0]).toMatchObject({ localId: saved[0].localId, status: 'uploading' });
+    await act(async () => { freshUpload.resolve(attachment('att_fresh')); await ready; });
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(['att_fresh']);
   });
 
   it('等待期间上传失败取消发送，草稿保留，网络失败可以重试', async () => {
