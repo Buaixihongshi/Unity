@@ -42,6 +42,17 @@ def mission_interrupt(repo, mission, payload):
     return False
 
 
+
+def attachment_message_ids(repo, mission, agent_id, turn_id, provider_id, token):
+    if not mission or not is_v2(mission) or not token:
+        return None
+    policy = Deliberation(repo)
+    with policy.transaction(mission.id) as (_, state):
+        policy._lease(state, agent_id, turn_id, provider_id, token)
+        frozen = policy.get(mission.id, state['snapshot_id'])
+        return {message['id'] for message in frozen['messages'] if message['mission_id'] == mission.id}
+
+
 def mission_prepare(repo, settings, payload, registry, valid_ids):
     from backend.app.extensions.discussion.requests import build_config
     return build_config(repo, settings, payload, registry, valid_ids)

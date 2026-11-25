@@ -10,15 +10,10 @@ from backend.app.attachments.store import AttachmentError, AttachmentStore
 
 def prepare(tools, mission_id, agent_id, turn_id, provider_id, prompt, mode, directory=None):
     store = AttachmentStore(tools.repository)
-    message_ids = None
+    from backend.app import extension_points
     mission = tools.repository.get_mission(mission_id)
-    from backend.app.extensions.discussion.deliberation import Deliberation, is_v2
-    if mission and is_v2(mission) and getattr(tools, 'lease_token', None):
-        policy = Deliberation(tools.repository)
-        with policy.transaction(mission_id) as (current, state):
-            policy._lease(state, agent_id, turn_id, provider_id, tools.lease_token)
-            frozen = policy.get(mission_id, state['snapshot_id'])
-            message_ids = {message['id'] for message in frozen['messages'] if message['mission_id'] == mission_id}
+    message_ids = extension_points.first('attachment_message_ids', tools.repository, mission,
+        agent_id, turn_id, provider_id, getattr(tools, 'lease_token', None))
     images = store.for_mission(mission_id, message_ids=message_ids)
     if not images:
         return prompt, []

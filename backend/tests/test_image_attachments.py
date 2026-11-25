@@ -278,6 +278,7 @@ def test_mcp_process_receives_pixels_and_removes_temporary_files(api, temp_setti
             captured['temporary'] = path
         return _make_streaming_proc([])
     monkeypatch.setattr('backend.app.adapters.mcp_subprocess.subprocess.Popen', popen)
+    monkeypatch.setattr('backend.app.adapters.mcp_subprocess._seed_codex_auth', lambda _: None)
     adapter = MCPSubprocessAdapter(basename, ['-p'] if basename == 'claude' else ['exec', '--json'],
         db_path=temp_settings.database_path, artifact_root=temp_settings.artifact_root, timeout=2)
     adapter.run_turn(mission.id, 'baobao', 'turn_pixels', basename, 'inspect', MCPTools(api[1], temp_settings.artifact_root))
