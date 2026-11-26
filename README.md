@@ -81,7 +81,33 @@ Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没�
 - **统一上下文装配（Context Management）**：由 `backend/app/memory/assembly.py` 统筹全局装配，杜绝全量历史无脑堆砌。按固定优先级与字符预算分层注入：未确认模型交接 → 长期记忆摘要 → 会话滚动检查点 → 对话与产物清单；配套 `read_context(message_ids=[...])` 原文补读机制，按需精准展开。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
 - **长期记忆与检查点（Memory）**：“文件为权威，SQLite 存派生索引”。角色长期记忆以独立 Markdown（带 YAML frontmatter）原子落盘；SQLite 仅维护检索索引与短期滚动检查点（`save_checkpoint`），支持一键 `sync`/`rebuild` 自愈重建；角色可自主新增、按版本修订及安全遗忘条目。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
 - **回合观测与链路追踪（Trace / Observability）**：以“回合（Turn）”为第一判定单位（任务太大、单步太碎）。所有事件（CLI 原生工具、MCP 活动、A2A 委派、产物写入、Token 消耗）按回合聚合折叠。检查规则为纯函数“读时计算、不落库”，实时评估 `claims_match_events`（回复与行为一致性）、工具错误重试与阻塞说明，并提供全局跨会话 Trace 覆盖率与成本透视。[详见回合观测](docs/OBSERVABILITY.md)。
-- **离线多 Agent 评测（EVL / Evaluation）**：不盲目预设“多 Agent 一定更好”，而是回答在哪些任务更优、哪些任务反而更差。设计严格的 A/B/C/D 配对对照实验（单 Agent / 自我反思 / 固定流水线 / 动态 A2A），结合闭卷题集与真实 PR 回放（PR Replay），基于客观 Rubric 评分，量化 Token、延迟、成本、观点冗余度（Jaccard 相似度）与信息损耗。[详见评测实验](docs/EVALUATION.md)。
+- **离线多 Agent 评测（EVL / Evaluation）**：不盲目预设“多 Agent 一定更好”，而是回答在哪些任务更优、哪些任务反而更差。设计严格的 A/B/C/D 配对对照实验（单 Agent / 自我反思 / 固定流水线 / 动态 A2A），结合闭卷题集、真实 PR 回放（PR Replay）与私卡协作评测（`clueeval` / HiddenBench），基于客观 Rubric 与事实核对量化质量、Token、延迟、成本、观点冗余度（Jaccard 相似度）与信息损耗。[详见评测实验](docs/EVALUATION.md) · [私卡评测说明](eval/clueeval/README.md)。
+
+### 私卡协作评测（clueeval / HiddenBench）
+
+除全信息对称的 A/B/C/D 对照外，Unity 使用 `clueeval`（[`scripts/run_clueeval.py`](scripts/run_clueeval.py)）验证**信息不对称场景下的多角色协作**：共享材料会把单个模型引向错误诱饵，任何一席只凭自己手里的 1 张私卡都无法确定排除诱饵，必须通过多轮讨论拼齐分散信息才能锁定唯一正解。
+
+- **题集与来源**：含 2 道 Unity 自制题（`q1-storage` 存储选型、`q2-rootcause` 故障根因，各 3 席位），以及公开基准 **HiddenBench**（[`YuxuanLi1225/HiddenBench`](https://github.com/YuxuanLi1225/HiddenBench)，MIT License，修订 `1e3c25b1fd79`，arXiv:2505.11556 §3.1）第 9 题 `hb-009-critical_hospital_transfer`（4 席位，含英文原题与作者自译中文版 `zh-1`；中文版仅换语言，成绩不与英文原题直接比较）。
+- **实验条件与双执行层**：
+  - `private`（私卡协作）：每席仅拿共享材料 + 1 张私卡，按「讨论前独立作答 → 轮流发言讨论 → 讨论后独立作答」进行，私卡与首发言人随局号轮换；HiddenBench 题按原论文 §3.1 不告知队友材料不同，最终输出 `{"vote", "rationale"}` JSON。
+  - `shared_only`（仅共享材料）与 `solo_full`（单人全材料基线，一次性给齐全部私卡直接作答，仅中文题）。
+  - 执行分两层：`direct-cli-round-robin`（`--mode real`，无状态直连各 CLI 轮流讨论，PR #134）与 `unity-orchestrated`（`--mode orchestrated`，经 Unity `MissionRunner` 与 `yiren_hub` MCP 闭卷执行，PR #150）。
+- **闭卷与防作弊审计**：题面与 `answer_key.json` 物理拆分（仅 `score` 阶段读取答案）；CLI 启动前强制核对 `cards_in_initial_context` 仅含本席私卡；逐条解析事件流禁用工具与子代理（Codex `--disable`、Claude `--tools ""` 与编排模式白名单/记录完整性校验、Antigravity 临时 `strict` + 拒绝规则），一旦出现工具事件或无法确认无工具，整局记入 `invalid_games` 作废不计分。
+
+#### 阶段实测记录
+
+| 批次 / 模式 | 题目与规模 | 讨论前（仅私卡） | 讨论后（个人 / 全员一致） | 单人全材料 `solo_full` | 耗时与成本说明 |
+| --- | --- | --- | --- | --- | --- |
+| `smoke-real-140b`（2026-11-08，`direct-cli-round-robin`，1 轮） | `hb-009` 英文原题（1/1 局有效，4 席日常路由） | 1/4（25%） | **4/4（100%）** · 一致 `Hospital A` | — | #140 事件审计修复后首轮英文原题有效闭卷验证 |
+| `formal-20261109-1`（2026-11-09，`direct-cli-round-robin`，3 轮，PR #134 @ `e503f21` 候选批次） | `q1-storage`（3/3 局有效） | 0/9（0%） | **9/9（100%）** · 3/3 全员一致 | 12/12（100%） | 协作均值 250s / 局 vs 单人 18s；Claude 部分费用 5.40× |
+| 同上 | `q2-rootcause`（3/3 局有效） | 2/9（22%） | **9/9（100%）** · 3/3 全员一致 | 12/12（100%） | 协作均值 244s / 局 vs 单人 15s；Claude 部分费用 6.10× |
+| 同上 | `hb-009-zh` 中文译版（2/3 局有效；g1 初跑及同号补跑因第 3 席触发 `run_command`/`search_web` 作废） | 0/8（0%） | **8/8（100%）** · 2/2 全员一致 | 12/12（100%） | 协作均值 234s / 局 vs 单人 12s；Claude 部分费用 7.20× |
+| `orch-fixed-game-1`（2026-11-09，`unity-orchestrated`，1 轮，PR #150 验证） | `q1-storage`（1 局，3 席全配 `codex/gpt-6.1-sol` low） | 0/3（0%） | **3/3（100%）** · 一致选对 | — | 9 次宿主调用，API 等价估算 $0.6614；另完成 Claude `opus` 单席闭卷探针 |
+
+> **结论边界与已知限制**：
+> - `formal-20261109-1` 证明了**信息分散时**多轮讨论可将准确率从 0%–22% 提升至 100%，但在信息本就集中的 `solo_full` 基线上单人同样达到 100%，不能据此外推“全信息场景下多 Agent 更强”；且该批次属于 `direct-cli-round-robin` 层、每格仅 2–3 局有效样本，不足以下统计显著结论。
+> - **Unity 编排层待补跑**：PR #150 已在 `q1-storage` 跑通编排闭环，HiddenBench 4 席编排批次与多局对比尚未开跑（`read_context` 隔离与 A2A 归属目前仅由 fixture 回归覆盖）。
+> - **公网原题联网拦截边界（#145）**：Antigravity CLI 1.5.3 的拒绝规则不支持 `search_web(*)` / `browser(*)`，面对 HiddenBench 这类公网有原题的题目仍可能实际联网；当前依赖事件流检测捕获并整局作废（`formal-20261109-1` 的 `hb-009-zh` g1 即因此作废）。另各 CLI 会读取用户级全局指令文件，运行 `manifest.json` 已记录其 SHA-256 供跨批对照；且仅 Claude 上报费用，其余 CLI 费用缺失。
 
 ## 进度
 
@@ -93,6 +119,7 @@ Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没�
 - [x] 长期记忆与检查点：文件权威落盘、SQLite 派生索引自愈重建，记忆可查可改可回溯
 - [x] 回合观测（Trace）：以回合为单位捕获原生与 MCP 工具活动，纯函数读时检查，全局成本与覆盖率大盘
 - [x] 离线评测（EVL）：A/B/C/D 对照实验框架、闭卷基准题集与 Rubric 加权评分
+- [x] 私卡协作评测（clueeval / HiddenBench）：直连轮流与 Unity 编排双模式、防串卡与事件流闭卷审计
 - [x] 角色和模型分开配置，接 Codex / Claude Code / Antigravity CLI 和自定义 API
 - [x] macOS 安装包（预览版，未公证，只有 Apple 芯片）
 - [ ] 🚧 真实仓库 PR 回放评测（PR Replay 评测集扩充与自动化运行）
@@ -177,7 +204,7 @@ cd Unity
 | 伙伴的性格和讨论方式 | [角色](docs/PERSONALITIES.md) · [讨论技能](docs/ROUNDTABLE.md) · [活人感是删出来的](docs/notes/making-partners-feel-alive.md) |
 | 多 Agent 协作与 A2A 协议 | [A2A 协同协议](docs/A2A_PROTOCOL.md) · [自主工作](docs/AUTONOMOUS_WORK.md) |
 | 记忆与模型切换 | [上下文记忆](docs/CONTEXT_MEMORY.md) |
-| 执行过程与对照实验 | [回合观测与 Trace](docs/OBSERVABILITY.md) · [评测 (EVL)](docs/EVALUATION.md) |
+| 执行过程与对照实验 | [回合观测与 Trace](docs/OBSERVABILITY.md) · [评测 (EVL)](docs/EVALUATION.md) · [私卡评测 (clueeval / HiddenBench)](eval/clueeval/README.md) |
 | 参与开发、检查和发布 | [贡献指南](CONTRIBUTING.md) · [开发环境](docs/ENVIRONMENTS.md) · [发布与恢复](docs/RELEASING.md) |
 
 欢迎提 issue，也欢迎聊聊你希望几个 AI 一起做些什么。
