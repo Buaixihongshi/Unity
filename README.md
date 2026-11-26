@@ -67,62 +67,52 @@ Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没�
 
 > 以上对比依据各项目 2026 年 11 月的公开 README，它们更新很快，写错了或过时了欢迎提 issue。
 
-## 项目架构
+## 它是怎么跑起来的
+
+如果把 Unity 比作一间本地工作室，里面的分工其实很简单：**你在群里发话，一个本地“管家”负责传话、整理前情、记账和看紧代码目录，几个 AI 各自接入后按分工干活。**
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/unity-architecture-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/unity-architecture-light.svg">
-  <img alt="Unity 系统架构图" src="docs/images/unity-architecture-light.svg" width="100%">
+  <img alt="Unity 是怎么跑起来的" src="docs/images/unity-architecture-light.svg" width="100%">
 </picture>
 
-### 核心机制实现
+背后主要靠这几件实在事：
 
-- **A2A 协同协议（Agent-to-Agent）**：基于统一 MCP 工具 `invoke_agent` 实现伙伴之间的动态接力。支持单向移交（`fire_and_forget`）与带唤醒恢复栈的双向求助（`wait_reply`）。宿主在调度时对委派实行“就近兑现”，内置调用链防环检测与深度预算控制；在自主任务中自动沉淀为持久化子任务与非自审约束。[详见 A2A 协议规范](docs/A2A_PROTOCOL.md)。
-- **统一上下文装配（Context Management）**：由 `backend/app/memory/assembly.py` 统筹全局装配，杜绝全量历史无脑堆砌。按固定优先级与字符预算分层注入：未确认模型交接 → 长期记忆摘要 → 会话滚动检查点 → 对话与产物清单；配套 `read_context(message_ids=[...])` 原文补读机制，按需精准展开。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
-- **长期记忆与检查点（Memory）**：“文件为权威，SQLite 存派生索引”。角色长期记忆以独立 Markdown（带 YAML frontmatter）原子落盘；SQLite 仅维护检索索引与短期滚动检查点（`save_checkpoint`），支持一键 `sync`/`rebuild` 自愈重建；角色可自主新增、按版本修订及安全遗忘条目。[详见上下文记忆](docs/CONTEXT_MEMORY.md)。
-- **回合观测与链路追踪（Trace / Observability）**：以“回合（Turn）”为第一判定单位（任务太大、单步太碎）。所有事件（CLI 原生工具、MCP 活动、A2A 委派、产物写入、Token 消耗）按回合聚合折叠。检查规则为纯函数“读时计算、不落库”，实时评估 `claims_match_events`（回复与行为一致性）、工具错误重试与阻塞说明，并提供全局跨会话 Trace 覆盖率与成本透视。[详见回合观测](docs/OBSERVABILITY.md)。
-- **离线多 Agent 评测（EVL / Evaluation）**：不盲目预设“多 Agent 一定更好”，而是回答在哪些任务更优、哪些任务反而更差。设计严格的 A/B/C/D 配对对照实验（单 Agent / 自我反思 / 固定流水线 / 动态 A2A），结合闭卷题集、真实 PR 回放（PR Replay）与私卡协作评测（`clueeval` / HiddenBench），基于客观 Rubric 与事实核对量化质量、Token、延迟、成本、观点冗余度（Jaccard 相似度）与信息损耗。[详见评测实验](docs/EVALUATION.md) · [私卡评测说明](eval/clueeval/README.md)。
+- **AI 之间怎么互相摇人**：你说一句 `@谁`，写完方案的伙伴可以直接把棒递给下一位；卡壳时也能先拉另一个伙伴问一句、等对方回话再接着干。本地管家会盯着调用链，防止两个 AI 互相踢皮球陷入死循环。
+- **聊得长了怎么不糊涂、不费额度**：每次请 AI 开口前，管家不会把几百条历史记录一股脑全塞进去，而是只挑出“没交接完的事 + 长期笔记 + 当前聊天的阶段小结 + 最近几句对话”；真需要翻哪句原话，AI 再按编号精准调阅。
+- **记忆放哪、怕不怕丢**：每个伙伴的长期记忆独立存成一本你看得见、改得动、也能删掉的**本地 Markdown 笔记本**，检索索引坏了能从笔记本重建；聊天记录、阶段小结和任务进度保存在本地数据库里，仍需自行备份。
+- **自主改代码时怎么隔离、干完怎么对账**：启动已确认的自主开发任务后，Unity 会为**每项任务**准备独立分支和目录（同任务的伙伴共用目录，普通对话不会自动创建）；后台按回合查看已记录的工具活动、用量和估算费用，并提示部分发言与记录矛盾的地方（缺记录会标未知）。
+- **怎么证明“多个 AI 一起干”不是噱头**：我们没靠感觉吹，而是真拿题测试过——
+  - **同题打擂台**：同一批任务，分别让“单个 AI 硬干 / 自己检查两遍 / 固定流程接力 / 自由摇人”四组上场，对比质量、耗时和花销，看清到底哪类活值得叫人。
+  - **“拼线索”闭卷盲测**：每人只拿一部分私密线索（共看同一份背景材料），通过多轮讨论交换信息，看能不能拼出唯一正解；测试时禁用并审计外部工具，一旦发现或无法排除工具调用（含个别 CLI 可能触发的联网搜索）整局作废。
 
-### 私卡协作评测（clueeval / HiddenBench）
+<details>
+<summary>想看底层实现细节与评测实测数据，点这里展开</summary>
 
-除全信息对称的 A/B/C/D 对照外，Unity 使用 `clueeval`（[`scripts/run_clueeval.py`](scripts/run_clueeval.py)）验证**信息不对称场景下的多角色协作**：共享材料会把单个模型引向错误诱饵，任何一席只凭自己手里的 1 张私卡都无法确定排除诱饵，必须通过多轮讨论拼齐分散信息才能锁定唯一正解。
+- **伙伴接力（A2A）**：基于统一 MCP 工具 `invoke_agent` 实现单向移交（`fire_and_forget`）与带唤醒恢复栈的双向求助（`wait_reply`），由宿主“就近兑现”并限制深度、检测环路；自主任务中自动沉淀为子任务与“非自审”约束。详见 [A2A 协议规范](docs/A2A_PROTOCOL.md)。
+- **上下文按需装配**：由 `backend/app/memory/assembly.py` 按固定优先级与字符预算分层注入（未确认模型交接 → 长期记忆摘要 → 滚动检查点 → 对话与产物清单），配套 `read_context(message_ids=[...])` 按需精确补读原文。详见 [上下文记忆](docs/CONTEXT_MEMORY.md)。
+- **文件权威记忆与索引重建**：在长期记忆模块中，带 YAML frontmatter 的 Markdown 原子落盘为权威，SQLite 仅存其派生检索索引（支持一键 `sync`/`rebuild` 重建）；短期滚动检查点（`save_checkpoint`）及会话、消息、任务状态仍保存在 SQLite 中，角色可新增、按版本修订或安全遗忘。详见 [上下文记忆](docs/CONTEXT_MEMORY.md)。
+- **回合观测与一致性核对（Trace）**：以“回合（Turn）”为单位聚合已捕获的 CLI 原生工具、MCP 活动、委派、产物与用量；检查规则为纯函数读时计算、不落库，做有限类型的启发式矛盾核对（`claims_match_events`，无事件证据标 `n/a`）、错误重试核对与估算成本统计（原生工具并非全覆盖，缺费率或零用量标未知）。详见 [回合观测](docs/OBSERVABILITY.md)。
+- **同题对照评测（EVL）**：A/B/C/D 配对对照实验框架（单 Agent / 自我反思 / 固定流水线 / 动态 A2A），结合闭卷题集与真实 PR 回放，基于 Rubric 量化质量、Token、延迟、成本、观点冗余度与信息损耗。详见 [评测实验](docs/EVALUATION.md)。
+- **私卡协作盲测（`clueeval` / HiddenBench）**：使用 [`scripts/run_clueeval.py`](scripts/run_clueeval.py) 在 2 道自制题（`q1-storage`、`q2-rootcause`）与 HiddenBench 第 9 题 `hb-009-critical_hospital_transfer`（英文原题与中文译版 `zh-1`）上测试信息不对称协作，覆盖直连轮流（`direct-cli-round-robin`）与 Unity 编排（`unity-orchestrated`）双模式，并通过拆分答案与事件流禁工具审计防作弊。
+  - 实测边界：在直连 CLI 层的 `formal-20261109-1` 批次（每题仅 2–3 局有效样本）中，信息分散时多轮讨论将单席准确率从 0%–22% 提至 100%（另有 `smoke-real-140b` 英文 `hb-009` 1 局 25%→100%、编排层 `orch-fixed-game-1` 的 `q1-storage` 1 局 0%→100%）；但在信息集中的 `solo_full` 基线（仅中文题）上单人同样达到 100% 且更快、“更省”仅覆盖已记录的 Claude 部分费用（其余 CLI 费用缺失）。上述直连批次不足以下统计显著结论，也不能外推 Unity 编排或全信息场景优势；英文原题与中文译版成绩不可直接比较。HiddenBench 4 席编排批次与多局对比待补跑；各 CLI 仍会读取用户级全局指令文件且禁用规则并非文件系统隔离，Antigravity 联网拦截（#145）仍依赖事件流检测事后作废。完整批次记录与详细限制见 [私卡评测说明](eval/clueeval/README.md)。
 
-- **题集与来源**：含 2 道 Unity 自制题（`q1-storage` 存储选型、`q2-rootcause` 故障根因，各 3 席位），以及公开基准 **HiddenBench**（[`YuxuanLi1225/HiddenBench`](https://github.com/YuxuanLi1225/HiddenBench)，MIT License，修订 `1e3c25b1fd79`，arXiv:2505.11556 §3.1）第 9 题 `hb-009-critical_hospital_transfer`（4 席位，含英文原题与作者自译中文版 `zh-1`；中文版仅换语言，成绩不与英文原题直接比较）。
-- **实验条件与双执行层**：
-  - `private`（私卡协作）：每席仅拿共享材料 + 1 张私卡，按「讨论前独立作答 → 轮流发言讨论 → 讨论后独立作答」进行，私卡与首发言人随局号轮换；HiddenBench 题按原论文 §3.1 不告知队友材料不同，最终输出 `{"vote", "rationale"}` JSON。
-  - `shared_only`（仅共享材料）与 `solo_full`（单人全材料基线，一次性给齐全部私卡直接作答，仅中文题）。
-  - 执行分两层：`direct-cli-round-robin`（`--mode real`，无状态直连各 CLI 轮流讨论，PR #134）与 `unity-orchestrated`（`--mode orchestrated`，经 Unity `MissionRunner` 与 `yiren_hub` MCP 闭卷执行，PR #150）。
-- **闭卷与防作弊审计**：题面与 `answer_key.json` 物理拆分（仅 `score` 阶段读取答案）；CLI 启动前强制核对 `cards_in_initial_context` 仅含本席私卡；逐条解析事件流禁用工具与子代理（Codex `--disable`、Claude `--tools ""` 与编排模式白名单/记录完整性校验、Antigravity 临时 `strict` + 拒绝规则），一旦出现工具事件或无法确认无工具，整局记入 `invalid_games` 作废不计分。
-
-#### 阶段实测记录
-
-| 批次 / 模式 | 题目与规模 | 讨论前（仅私卡） | 讨论后（个人 / 全员一致） | 单人全材料 `solo_full` | 耗时与成本说明 |
-| --- | --- | --- | --- | --- | --- |
-| `smoke-real-140b`（2026-11-08，`direct-cli-round-robin`，1 轮） | `hb-009` 英文原题（1/1 局有效，4 席日常路由） | 1/4（25%） | **4/4（100%）** · 一致 `Hospital A` | — | #140 事件审计修复后首轮英文原题有效闭卷验证 |
-| `formal-20261109-1`（2026-11-09，`direct-cli-round-robin`，3 轮，PR #134 @ `e503f21` 候选批次） | `q1-storage`（3/3 局有效） | 0/9（0%） | **9/9（100%）** · 3/3 全员一致 | 12/12（100%） | 协作均值 250s / 局 vs 单人 18s；Claude 部分费用 5.40× |
-| 同上 | `q2-rootcause`（3/3 局有效） | 2/9（22%） | **9/9（100%）** · 3/3 全员一致 | 12/12（100%） | 协作均值 244s / 局 vs 单人 15s；Claude 部分费用 6.10× |
-| 同上 | `hb-009-zh` 中文译版（2/3 局有效；g1 初跑及同号补跑因第 3 席触发 `run_command`/`search_web` 作废） | 0/8（0%） | **8/8（100%）** · 2/2 全员一致 | 12/12（100%） | 协作均值 234s / 局 vs 单人 12s；Claude 部分费用 7.20× |
-| `orch-fixed-game-1`（2026-11-09，`unity-orchestrated`，1 轮，PR #150 验证） | `q1-storage`（1 局，3 席全配 `codex/gpt-6.1-sol` low） | 0/3（0%） | **3/3（100%）** · 一致选对 | — | 9 次宿主调用，API 等价估算 $0.6614；另完成 Claude `opus` 单席闭卷探针 |
-
-> **结论边界与已知限制**：
-> - `formal-20261109-1` 证明了**信息分散时**多轮讨论可将准确率从 0%–22% 提升至 100%，但在信息本就集中的 `solo_full` 基线上单人同样达到 100%，不能据此外推“全信息场景下多 Agent 更强”；且该批次属于 `direct-cli-round-robin` 层、每格仅 2–3 局有效样本，不足以下统计显著结论。
-> - **Unity 编排层待补跑**：PR #150 已在 `q1-storage` 跑通编排闭环，HiddenBench 4 席编排批次与多局对比尚未开跑（`read_context` 隔离与 A2A 归属目前仅由 fixture 回归覆盖）。
-> - **公网原题联网拦截边界（#145）**：Antigravity CLI 1.5.3 的拒绝规则不支持 `search_web(*)` / `browser(*)`，面对 HiddenBench 这类公网有原题的题目仍可能实际联网；当前依赖事件流检测捕获并整局作废（`formal-20261109-1` 的 `hb-009-zh` g1 即因此作废）。另各 CLI 会读取用户级全局指令文件，运行 `manifest.json` 已记录其 SHA-256 供跨批对照；且仅 Claude 上报费用，其余 CLI 费用缺失。
+</details>
 
 ## 进度
 
 做完一项打一个勾，🚧 表示正在做。
 
 - [x] 多位伙伴共享对话、记忆和产物，@ 点名、互相接力
-- [x] A2A 协议：通过 `invoke_agent` 实现单向接力与 `wait_reply` 双向唤醒，内置防环路与深度预算
-- [x] 上下文分层装配：模型交接 + 长期记忆 + 滚动检查点预算裁剪，支持按需精确补读
-- [x] 长期记忆与检查点：文件权威落盘、SQLite 派生索引自愈重建，记忆可查可改可回溯
-- [x] 回合观测（Trace）：以回合为单位捕获原生与 MCP 工具活动，纯函数读时检查，全局成本与覆盖率大盘
-- [x] 离线评测（EVL）：A/B/C/D 对照实验框架、闭卷基准题集与 Rubric 加权评分
-- [x] 私卡协作评测（clueeval / HiddenBench）：直连轮流与 Unity 编排双模式、防串卡与事件流闭卷审计
+- [x] 伙伴互相摇人接力：写完能顺手交给下一位，卡壳还能问人再回来，不会无限踢皮球
+- [x] 长对话按需拼装前情：优先带交接、长期笔记和阶段摘要上场，需要哪句再精准翻原话
+- [x] 看得见的本地记忆：长期笔记存成 Markdown 文件，数据库索引坏了能一键重建
+- [x] 回合记账与矛盾提示：按回合查看已记录的工具活动、用量和估算费用，提示部分发言与记录矛盾（缺记录标未知）
+- [x] 实测“多 AI 值不值得用”：同题对比单干与协作，还有拼线索盲测验证分散信息能不能聊出正解
 - [x] 角色和模型分开配置，接 Codex / Claude Code / Antigravity CLI 和自定义 API
 - [x] macOS 安装包（预览版，未公证，只有 Apple 芯片）
-- [ ] 🚧 真实仓库 PR 回放评测（PR Replay 评测集扩充与自动化运行）
+- [ ] 🚧 真实仓库 PR 回放评测（拿真实开发任务扩充测试集、自动跑分）
 - [ ] 🚧 讨论扩展 `/discuss`：能用，默认关闭
 - [ ] 🚧 任务扩展：独立分支和目录、预览、交付都有，但执行还是串行，长任务接续和失败恢复不够顺
 - [ ] 🚧 选择任意项目仓库：桌面版菜单有入口，网页版还没有；已有会话切换仓库还有 bug（#63）
@@ -179,32 +169,37 @@ cd Unity
 
 会话、记忆和文件主要留在本机。使用真实模型时，请求内容仍会发送给你选择的服务。
 
-## 工程协作与 CI 门禁
+## 参与开发（给贡献者）
+
+如果你想一起改代码、提 PR，Unity 用**“一项任务一个独立代码目录 + 本地与云端共用同一套检查清单 + 干净的主线试跑环境”**来防止多个 AI 把主线改乱、或误伤你平时在用的实例；具体规范见 [贡献指南](CONTRIBUTING.md) 与 [开发流程 SOP](docs/SOP.md)。
+
+<details>
+<summary>想看开发协作流程图与踩坑演进（worktree 隔离、门禁与发布边界），点这里展开</summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/unity-ci-workflow-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/unity-ci-workflow-light.svg">
-  <img alt="Unity 工程协作与 CI 门禁" src="docs/images/unity-ci-workflow-light.svg" width="100%">
+  <img alt="Unity 开发、检查与发布协作流程" src="docs/images/unity-ci-workflow-light.svg" width="100%">
 </picture>
 
-这套开发与发布流程不是一次性照搬重型框架，而是从标准轻量方案起步，在多 Agent 协同开发的真实摩擦里逐步改出来的：
+这套流程从轻量的主干开发（`main` + 短命 `codex/*` 分支 + PR Squash 合并）和 GitHub Actions 双路检查起步，结合多 Agent 协同开发的真实踩坑逐步演进：
 
-- **一开始参考的方案**：采用轻量 **Trunk-Based（主干开发）**（唯一长期主线 `main` + 短命 `codex/*` 分支 + PR Squash 合并，PR #2）、标准 **GitHub Actions 双路 PR 门禁**（`Backend tests` 与 `Frontend tests and build` 并行、10 分钟超时与 `concurrency` 取消过期任务），以及早期受控发布流程（`CODEOWNERS`、独立 `Owner release` 审批 workflow 与“每任务先建 Issue”）。
-- **结合实际踩坑做的重要改动**：
-  1. **Git Worktree 三环境物理隔离（PR #12 → #23 → #174）**：用 `scripts/env.sh dev <task>` 为每项任务拉出独立目录、端口与 `.yiren/<profile>/` 状态，避免多 Agent 并发写同一目录或误伤日常服务；另设只读 `alpha` 主线镜像做合后复验，日常 `runtime` 仅人工显式切换。后期为防止 `--detach` 环境堆积耗尽内存，补上了空闲 120 分钟自动回收与并行上限（默认 4）。
-  2. **本地与 CI 共用同一把尺子（PR #22 → #23）**：所有检查收拢到 `scripts/checks.py`（7 个分组），由 `scripts/check.sh` 与 GitHub Actions 共用；执行前后核对 `git_sha` 与 `source_digest`，测试途中改过代码直接判失败，杜绝“混合版本绿灯”。
-  3. **划清“离线确定性 CI”与“真实模型验收”边界**：Actions 里只跑 `--fake` / `fixture` 烟测与评测，稳定不烧额度；`development`（默认）与 `alpha` 则继承日常 CLI 路由跑真实链路，上线前再由 `scripts/release.sh` 校验证据链（PR → `head.sha` 双路 CI → 产物哈希）。
-  4. **对多余流程做减法（PR #29、PR #46）**：砍掉与 GitHub 原生 PR Review / Ruleset 重叠的独立 `Owner approval` 自定义 workflow（PR #29）；不再要求非 bug 改动强制建 Issue，仅 bug 必须建 Issue 闭环（PR #46）。
-  5. **依赖审计“可豁免但不腐化”（PR #193）**：由 `scripts/audit_frontend.py` 与 `config/audit-exemptions.json` 接管，豁免必须写清公告、原因、Issue 与撤销条件并覆盖全部根公告；结构异常直接 fail-closed 拦截，上游修复后过期豁免反而会报错催删。
+1. **三套环境物理隔离（PR #12 → #23 → #174）**：用 `scripts/env.sh dev <task>` 为每项任务拉出独立 worktree、端口与 `.yiren/<profile>/` 状态，并发不打架；另有干净只读的 `alpha` 主线镜像做合后复验，平时在用的 `runtime` 仅人工显式切换。空闲 120 分钟自动回收，默认最多同时跑 4 个开发实例。
+2. **本地与 CI 用同一把尺子（PR #22 → #23）**：所有检查收拢在 `scripts/checks.py`（7 个分组），本地 `scripts/check.sh` 与 GitHub Actions 共用；执行前后核对 `git_sha` 与 `source_digest`，测试途中改过代码直接判失败。
+3. **离线确定性检查 vs 真实模型验收分开**：GitHub Actions 里只跑 `--fake` / `fixture` 烟测与评测，稳定不烧额度；`development` 与 `alpha` 继承日常 CLI 路由跑真实链路，上线前由 `scripts/release.sh` 校验证据链。
+4. **给流程做减法（PR #29、PR #46）**：砍掉与 GitHub 原生 PR Review / Ruleset 重叠的独立 `Owner approval` 自定义 workflow；非 bug 改动不再强制先建 Issue，仅 bug 必须建 Issue 闭环。
+5. **依赖审计可豁免但不腐化（PR #193）**：`scripts/audit_frontend.py` 配合 `config/audit-exemptions.json` 管理豁免，写清公告、原因、Issue 与撤销条件，上游修复后过期豁免会自动报错催删。
+
+</details>
 
 ## 文档
 
 | 想了解什么 | 从这里看 |
 | --- | --- |
 | 伙伴的性格和讨论方式 | [角色](docs/PERSONALITIES.md) · [讨论技能](docs/ROUNDTABLE.md) · [活人感是删出来的](docs/notes/making-partners-feel-alive.md) |
-| 多 Agent 协作与 A2A 协议 | [A2A 协同协议](docs/A2A_PROTOCOL.md) · [自主工作](docs/AUTONOMOUS_WORK.md) |
+| 伙伴如何互相协作与自主干活 | [A2A 协同协议](docs/A2A_PROTOCOL.md) · [自主工作](docs/AUTONOMOUS_WORK.md) |
 | 记忆与模型切换 | [上下文记忆](docs/CONTEXT_MEMORY.md) |
-| 执行过程与对照实验 | [回合观测与 Trace](docs/OBSERVABILITY.md) · [评测 (EVL)](docs/EVALUATION.md) · [私卡评测 (clueeval / HiddenBench)](eval/clueeval/README.md) |
+| 怎么看每步干了啥、效果怎么测 | [回合观测](docs/OBSERVABILITY.md) · [评测实验](docs/EVALUATION.md) · [私卡盲测 (clueeval)](eval/clueeval/README.md) |
 | 参与开发、检查和发布 | [贡献指南](CONTRIBUTING.md) · [开发环境](docs/ENVIRONMENTS.md) · [发布与恢复](docs/RELEASING.md) |
 
 欢迎提 issue，也欢迎聊聊你希望几个 AI 一起做些什么。

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 344" width="1060" height="344" role="img" aria-labelledby="title-dark desc-dark">
-  <title id="title-dark">Unity 工程协作与 CI 门禁（深色版）</title>
-  <desc id="desc-dark">Unity 从 Worktree 隔离开发、双路 CI 门禁（共用 scripts/checks.py 底座）、alpha 主线镜像到人工发布日常 Runtime 的工程流程（深色主题）。</desc>
+  <title id="title-dark">Unity 开发、检查与发布协作流程（深色版）</title>
+  <desc id="desc-dark">Unity 如何防止多个 AI 把主线改乱（深色主题）：独立目录开发、本地与云端共用检查清单、主线干净试跑，以及人工确认后再更新平时在用的版本。</desc>
   <defs>
     <style>
       .sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif; }
@@ -39,8 +39,8 @@
     <path d="M 28 19 C 28 24 23 26 19 22 C 15 18 10 14 10 19 C 10 24 15 24 19 19 C 23 14 28 14 28 19 Z" fill="none" stroke="#0d1117" stroke-width="4.5" stroke-linejoin="round" />
     <path d="M 28 19 C 28 24 23 26 19 22 C 15 18 10 14 10 19 C 10 24 15 24 19 19 C 23 14 28 14 28 19 Z" fill="none" stroke="#8fc2b7" stroke-width="2.1" stroke-linejoin="round" />
 
-    <text x="52" y="18" class="sans" font-size="18" font-weight="900" fill="#f0f6fc">工程协作与 CI 门禁</text>
-    <text x="52" y="35" class="mono" font-size="10.5" font-weight="600" fill="#8b949e" letter-spacing="0.5">TRUNK-BASED · WORKTREE ISOLATION · SHARED CHECKS · MANUAL RELEASE</text>
+    <text x="52" y="18" class="sans" font-size="18" font-weight="900" fill="#f0f6fc">怎么协同改代码而不弄乱主线</text>
+    <text x="52" y="35" class="mono" font-size="10.5" font-weight="600" fill="#8b949e" letter-spacing="0.4">ISOLATED WORKTREE · SHARED CHECKS · CLEAN ALPHA · MANUAL RELEASE</text>
 
     <g transform="translate(656, 8)">
       <rect x="0" y="0" width="340" height="28" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.2" />
@@ -51,7 +51,7 @@
       <text x="156" y="18" class="sans legend-text">仅人工发布</text>
 
       <rect x="234" y="7" width="14" height="14" rx="3" fill="#141e1d" stroke="#8fc2b7" stroke-width="1.5" />
-      <text x="255" y="18" class="sans legend-text">共用检查底座</text>
+      <text x="255" y="18" class="sans legend-text">共用检查清单</text>
     </g>
   </g>
 
@@ -59,16 +59,16 @@
   <g id="shared-gate-dark">
     <rect x="32" y="96" width="468" height="214" rx="10" fill="#141e1d" stroke="#42635d" stroke-width="1.5" />
     <rect x="48" y="85" width="234" height="22" rx="5" fill="#8fc2b7" stroke="#0d1117" stroke-width="1.5" />
-    <text x="165" y="100" text-anchor="middle" class="sans tier-label">统一检查底座 · scripts/checks.py</text>
+    <text x="165" y="100" text-anchor="middle" class="sans tier-label">本地与云端共用同一套检查</text>
 
     <!-- Card 1: Worktree Dev -->
     <rect x="52" y="128" width="194" height="134" rx="8" fill="#010409" />
     <rect x="48" y="124" width="194" height="134" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 49 131 Q 49 125 55 125 L 235 125 Q 241 125 241 131 Z" fill="#8fc2b7" />
-    <text x="64" y="152" class="sans card-title">1. Worktree 隔离开发</text>
-    <text x="64" y="176" class="mono card-code">codex/task-* 独立目录</text>
-    <text x="64" y="198" class="sans card-sub">默认真实 CLI 隔离自验</text>
-    <text x="64" y="218" class="sans card-sub">空闲 120m 自动回收</text>
+    <text x="64" y="152" class="sans card-title">1. 独立目录开发</text>
+    <text x="64" y="176" class="mono card-code">codex/task-* 独立分支</text>
+    <text x="64" y="198" class="sans card-sub">默认用真实 AI 隔离自验</text>
+    <text x="64" y="218" class="sans card-sub">空闲 120 分钟自动回收</text>
     <text x="64" y="242" class="mono card-code">./scripts/env.sh dev</text>
 
     <!-- Arrow 1 -> 2 -->
@@ -79,19 +79,19 @@
     <rect x="294" y="128" width="194" height="134" rx="8" fill="#010409" />
     <rect x="290" y="124" width="194" height="134" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 291 131 Q 291 125 297 125 L 477 125 Q 483 125 483 131 Z" fill="#8fc2b7" />
-    <text x="306" y="152" class="sans card-title">2. 双路 CI 门禁</text>
-    <text x="306" y="176" class="sans card-sub">前后端并行 · 上限 10m</text>
-    <text x="306" y="198" class="sans card-sub">fixture 烟测 / 隐私 / 审计</text>
-    <text x="306" y="218" class="sans card-sub">新提交自动取消旧运行</text>
+    <text x="306" y="152" class="sans card-title">2. 自动检查把关</text>
+    <text x="306" y="176" class="sans card-sub">前后端并行 · 上限 10 分钟</text>
+    <text x="306" y="198" class="sans card-sub">离线烟测 / 隐私 / 依赖审计</text>
+    <text x="306" y="218" class="sans card-sub">有新提交自动取消旧检查</text>
     <text x="306" y="242" class="mono card-code">./scripts/check.sh</text>
 
     <!-- Footer inside shared gate -->
     <rect x="48" y="272" width="436" height="24" rx="5" fill="#192826" stroke="#42635d" stroke-width="1.2" />
-    <text x="266" y="288" text-anchor="middle" class="sans footer-note">本地与 CI 同源清单 · 执行前后比对 git_sha 与源码摘要防混版</text>
+    <text x="266" y="288" text-anchor="middle" class="sans footer-note">本地与云端同源清单 · 检查前后比对提交号与代码指纹防混版</text>
   </g>
 
   <!-- Arrow 2 -> 3 -->
-  <text x="524" y="180" text-anchor="middle" class="mono edge-label">Squash</text>
+  <text x="524" y="180" text-anchor="middle" class="mono edge-label">合并</text>
   <line x1="488" y1="191" x2="544" y2="191" stroke="#e6edf3" stroke-width="2" marker-end="url(#arrow-ink-dark)" />
 
   <!-- Card 3: alpha -->
@@ -99,10 +99,10 @@
     <rect x="554" y="128" width="194" height="134" rx="8" fill="#010409" />
     <rect x="550" y="124" width="194" height="134" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 551 131 Q 551 125 557 125 L 737 125 Q 743 125 743 131 Z" fill="#e0983c" />
-    <text x="566" y="152" class="sans card-title">3. alpha 主线镜像</text>
-    <text x="566" y="176" class="sans card-sub">干净只读 detached main</text>
-    <text x="566" y="198" class="sans card-sub">合入后真实 CLI 复验</text>
-    <text x="566" y="218" class="sans card-sub">不触碰日常运行实例</text>
+    <text x="566" y="152" class="sans card-title">3. 主线干净试跑</text>
+    <text x="566" y="176" class="sans card-sub">只读同步最新主线代码</text>
+    <text x="566" y="198" class="sans card-sub">合入后再用真实 AI 复验</text>
+    <text x="566" y="218" class="sans card-sub">不碰平时在用的版本</text>
     <text x="566" y="242" class="mono card-code">./scripts/env.sh alpha</text>
   </g>
 
@@ -113,18 +113,18 @@
   <!-- Protected Runtime Zone -->
   <g id="runtime-zone-dark">
     <rect x="826" y="96" width="202" height="214" rx="10" fill="#181512" stroke="#e0983c" stroke-width="1.5" stroke-dasharray="5 4" />
-    <rect x="842" y="85" width="136" height="22" rx="5" fill="#e0983c" stroke="#0d1117" stroke-width="1.5" />
-    <text x="910" y="100" text-anchor="middle" class="sans tier-label">物理隔离 · PROTECTED</text>
+    <rect x="842" y="85" width="164" height="22" rx="5" fill="#e0983c" stroke="#0d1117" stroke-width="1.5" />
+    <text x="924" y="100" text-anchor="middle" class="sans tier-label">隔离保护 · 不自动覆盖</text>
 
     <rect x="844" y="128" width="170" height="134" rx="8" fill="#010409" />
     <rect x="840" y="124" width="170" height="134" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 841 131 Q 841 125 847 125 L 1003 125 Q 1009 125 1009 131 Z" fill="#e0983c" />
-    <text x="856" y="152" class="sans card-title">日常 Runtime</text>
-    <text x="856" y="176" class="sans card-sub">合并不自动重启服务</text>
-    <text x="856" y="198" class="sans card-sub">追溯 PR / CI / SHA 证据</text>
-    <text x="856" y="218" class="sans card-sub">支持原子切换与回滚</text>
+    <text x="856" y="152" class="sans card-title">平时在用的版本</text>
+    <text x="856" y="176" class="sans card-sub">合入代码不自动重启</text>
+    <text x="856" y="198" class="sans card-sub">核对检查与指纹证据</text>
+    <text x="856" y="218" class="sans card-sub">支持一键切换与回退</text>
     <text x="856" y="242" class="mono card-code">./scripts/release.sh</text>
 
-    <text x="927" y="288" text-anchor="middle" class="sans edge-warn">独立数据 · 需空闲后显式激活</text>
+    <text x="927" y="288" text-anchor="middle" class="sans edge-warn">独立数据 · 空闲后人工切换</text>
   </g>
 </svg>
