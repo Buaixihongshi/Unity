@@ -152,6 +152,24 @@ cd Unity
 
 会话、记忆和文件主要留在本机。使用真实模型时，请求内容仍会发送给你选择的服务。
 
+## 工程协作与 CI 门禁
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/unity-ci-workflow-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/unity-ci-workflow-light.svg">
+  <img alt="Unity 工程协作与 CI 门禁" src="docs/images/unity-ci-workflow-light.svg" width="100%">
+</picture>
+
+这套开发与发布流程不是一次性照搬重型框架，而是从标准轻量方案起步，在多 Agent 协同开发的真实摩擦里逐步改出来的：
+
+- **一开始参考的方案**：采用轻量 **Trunk-Based（主干开发）**（唯一长期主线 `main` + 短命 `codex/*` 分支 + PR Squash 合并，PR #2）、标准 **GitHub Actions 双路 PR 门禁**（`Backend tests` 与 `Frontend tests and build` 并行、10 分钟超时与 `concurrency` 取消过期任务），以及早期受控发布流程（`CODEOWNERS`、独立 `Owner release` 审批 workflow 与“每任务先建 Issue”）。
+- **结合实际踩坑做的重要改动**：
+  1. **Git Worktree 三环境物理隔离（PR #12 → #23 → #174）**：用 `scripts/env.sh dev <task>` 为每项任务拉出独立目录、端口与 `.yiren/<profile>/` 状态，避免多 Agent 并发写同一目录或误伤日常服务；另设只读 `alpha` 主线镜像做合后复验，日常 `runtime` 仅人工显式切换。后期为防止 `--detach` 环境堆积耗尽内存，补上了空闲 120 分钟自动回收与并行上限（默认 4）。
+  2. **本地与 CI 共用同一把尺子（PR #22 → #23）**：所有检查收拢到 `scripts/checks.py`（7 个分组），由 `scripts/check.sh` 与 GitHub Actions 共用；执行前后核对 `git_sha` 与 `source_digest`，测试途中改过代码直接判失败，杜绝“混合版本绿灯”。
+  3. **划清“离线确定性 CI”与“真实模型验收”边界**：Actions 里只跑 `--fake` / `fixture` 烟测与评测，稳定不烧额度；`development`（默认）与 `alpha` 则继承日常 CLI 路由跑真实链路，上线前再由 `scripts/release.sh` 校验证据链（PR → `head.sha` 双路 CI → 产物哈希）。
+  4. **对多余流程做减法（PR #29、PR #46）**：砍掉与 GitHub 原生 PR Review / Ruleset 重叠的独立 `Owner approval` 自定义 workflow（PR #29）；不再要求非 bug 改动强制建 Issue，仅 bug 必须建 Issue 闭环（PR #46）。
+  5. **依赖审计“可豁免但不腐化”（PR #193）**：由 `scripts/audit_frontend.py` 与 `config/audit-exemptions.json` 接管，豁免必须写清公告、原因、Issue 与撤销条件并覆盖全部根公告；结构异常直接 fail-closed 拦截，上游修复后过期豁免反而会报错催删。
+
 ## 文档
 
 | 想了解什么 | 从这里看 |
