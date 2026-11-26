@@ -172,16 +172,16 @@
     <rect x="296" y="608" width="228" height="78" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 297 615 Q 297 609 303 609 L 517 609 Q 523 609 523 615 Z" fill="#c9d1d9" />
     <text x="312" y="634" class="sans card-title">本地数据库 (SQLite)</text>
-    <text x="312" y="653" class="sans card-sub">快速检索 · 记聊天阶段小结</text>
-    <text x="312" y="670" class="sans card-sub">存任务进度 · 坏了可从笔记还原</text>
+    <text x="312" y="653" class="sans card-sub">保存聊天、小结与任务进度</text>
+    <text x="312" y="670" class="sans card-sub">长期笔记索引坏了可重建</text>
 
     <!-- Worktrees Card -->
     <rect x="552" y="612" width="216" height="78" rx="8" fill="#010409" />
     <rect x="548" y="608" width="216" height="78" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 549 615 Q 549 609 555 609 L 757 609 Q 763 609 763 615 Z" fill="#c9d1d9" />
-    <text x="564" y="634" class="sans card-title">独立代码沙盒目录</text>
+    <text x="564" y="634" class="sans card-title">任务独立代码目录</text>
     <text x="564" y="653" class="mono card-code">task-worktrees/ 独立分支</text>
-    <text x="564" y="670" class="sans card-sub">绝不碰你平时干活的主目录</text>
+    <text x="564" y="670" class="sans card-sub">自主任务在独立目录开发</text>
 
     <!-- MCP <-> MemFile (placed at x=242 to clear Storage pill) -->
     <line x1="242" y1="546" x2="242" y2="602" stroke="#8fc2b7" stroke-width="2" marker-start="url(#arrow-sage-dark)" marker-end="url(#arrow-sage-dark)" />
@@ -211,11 +211,11 @@
     <rect x="828" y="242" width="184" height="122" rx="8" fill="#010409" />
     <rect x="824" y="238" width="184" height="122" rx="8" fill="#1f242c" stroke="#8b949e" stroke-width="1.8" />
     <path d="M 825 245 Q 825 239 831 239 L 1001 239 Q 1007 239 1007 245 Z" fill="#8fc2b7" />
-    <text x="838" y="264" class="sans card-title">每回合干了啥都留账</text>
+    <text x="838" y="264" class="sans card-title">按回合记账与核对</text>
     <text x="838" y="285" class="sans card-sub">只查当下记录 · 不乱改原账</text>
-    <text x="838" y="305" class="sans card-sub">核对“说到做到”没瞎编</text>
-    <text x="838" y="324" class="sans card-sub">记清工具调用与文件改动</text>
-    <text x="838" y="343" class="sans card-sub">统计每回合耗时与花销</text>
+    <text x="838" y="305" class="sans card-sub">提示部分发言与记录矛盾</text>
+    <text x="838" y="324" class="sans card-sub">查看已记录的工具与用量</text>
+    <text x="838" y="343" class="sans card-sub">估算费用 · 缺记录标未知</text>
 
     <rect x="824" y="374" width="184" height="28" rx="6" fill="#142320" stroke="#355851" stroke-width="1" />
     <text x="916" y="392" text-anchor="middle" class="sans badge-text" fill="#8fc2b7">不打扰干活 · 按回合对账</text>
