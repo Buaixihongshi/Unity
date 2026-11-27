@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 448" width="1060" height="448" role="img" aria-labelledby="title desc">
+  <title id="title">Unity 回合观测与核对链路（浅色版）</title>
+  <desc id="desc">Unity 观测系统从原始事件采集、纯函数读时拼装回合、两层检查与覆盖率并列，到设置页总览、回合明细与单回合细节三级下钻的完整链路。</desc>
+  <defs>
+    <style>
+      .sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+      .tier-label { font-size: 11.5px; font-weight: 800; letter-spacing: 0.4px; fill: #fdfbf7; }
+      .tier-label-ink { font-size: 11px; font-weight: 700; fill: #3f3b36; }
+      .card-title { font-size: 14px; font-weight: 800; fill: #1a1a1a; }
+      .card-sub { font-size: 11px; font-weight: 500; fill: #57534e; }
+      .card-code { font-size: 10px; font-weight: 600; fill: #3f3b36; }
+      .badge-text { font-size: 10px; font-weight: 700; letter-spacing: 0.2px; }
+      .legend-text { font-size: 11.5px; font-weight: 600; fill: #44403c; }
+      .edge-label { font-size: 10px; font-weight: 700; fill: #3f3b36; }
+    </style>
+
+    <pattern id="dot-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#e2dacb" />
+    </pattern>
+
+    <marker id="arrow-ink" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="#1a1a1a" />
+    </marker>
+    <marker id="arrow-sage" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="#4e7a70" />
+    </marker>
+    <marker id="arrow-dashed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="#6b665e" />
+    </marker>
+  </defs>
+
+  <!-- Canvas -->
+  <rect x="0" y="0" width="1060" height="448" rx="16" fill="#fdfbf7" />
+  <rect x="0" y="0" width="1060" height="448" rx="16" fill="url(#dot-grid)" opacity="0.85" />
+  <rect x="1" y="1" width="1058" height="446" rx="15" fill="none" stroke="#e3dbcd" stroke-width="1.5" />
+
+  <!-- Header -->
+  <g transform="translate(36, 20)">
+    <rect x="2" y="2" width="38" height="38" rx="9" fill="#1a1a1a" />
+    <rect x="0" y="0" width="38" height="38" rx="9" fill="#fdfbf7" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 28 19 C 28 24 23 26 19 22 C 15 18 10 14 10 19 C 10 24 15 24 19 19 C 23 14 28 14 28 19 Z" fill="none" stroke="#1a1a1a" stroke-width="4.5" stroke-linejoin="round" />
+    <path d="M 28 19 C 28 24 23 26 19 22 C 15 18 10 14 10 19 C 10 24 15 24 19 19 C 23 14 28 14 28 19 Z" fill="none" stroke="#7ba79d" stroke-width="2.1" stroke-linejoin="round" />
+
+    <text x="52" y="18" class="sans" font-size="18" font-weight="900" fill="#1a1a1a">回合观测与核对链路</text>
+    <text x="52" y="35" class="mono" font-size="10.5" font-weight="600" fill="#6b665e" letter-spacing="0.4">TURN-BASED OBSERVABILITY · READ-TIME CHECKS · HONEST N/A · 3-LEVEL DRILL-DOWN</text>
+
+    <g transform="translate(646, 8)">
+      <rect x="0" y="0" width="342" height="28" rx="6" fill="#f5f1e8" stroke="#d5cdbd" stroke-width="1.2" />
+      <line x1="14" y1="14" x2="38" y2="14" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow-ink)" />
+      <text x="45" y="18" class="sans legend-text">数据折算</text>
+
+      <line x1="118" y1="14" x2="142" y2="14" stroke="#4e7a70" stroke-width="2" marker-end="url(#arrow-sage)" />
+      <text x="149" y="18" class="sans legend-text">两层核对</text>
+
+      <line x1="224" y1="14" x2="248" y2="14" stroke="#6b665e" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#arrow-dashed)" />
+      <text x="255" y="18" class="sans legend-text">视图下钻</text>
+    </g>
+  </g>
+
+  <!-- ==================== UPPER TIER: READ-TIME PIPELINE ==================== -->
+  <g id="pipeline">
+    <!-- Card 1: Events -->
+    <rect x="40" y="96" width="200" height="150" rx="8" fill="#1a1a1a" />
+    <rect x="36" y="92" width="200" height="150" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 37 99 Q 37 93 43 93 L 229 93 Q 235 93 235 99 Z" fill="#7a4c18" />
+    <text x="50" y="119" class="sans card-title">1. 采集原始轨迹</text>
+    <text x="50" y="138" class="mono card-code">events + messages</text>
+    <text x="50" y="159" class="sans card-sub">原生工具 · MCP 调用 · 回复</text>
+    <text x="50" y="177" class="sans card-sub">A2A 求助 · 产物 · Token</text>
+    <text x="50" y="195" class="sans card-sub">写入前统一脱敏打码</text>
+    <rect x="50" y="209" width="172" height="22" rx="5" fill="#f5f1e8" stroke="#d5cdbd" stroke-width="1" />
+    <text x="136" y="224" text-anchor="middle" class="sans badge-text" fill="#7a4c18">工具输出保留前 2000 字符</text>
+
+    <!-- Arrow 1 -> 2 -->
+    <text x="267" y="157" text-anchor="middle" class="mono edge-label">turn_id</text>
+    <line x1="246" y1="167" x2="288" y2="167" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow-ink)" />
+
+    <!-- Card 2: Read-time Turn Assembly -->
+    <rect x="298" y="96" width="206" height="150" rx="8" fill="#1a1a1a" />
+    <rect x="294" y="92" width="206" height="150" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 295 99 Q 295 93 301 93 L 493 93 Q 499 93 499 99 Z" fill="#1f4f78" />
+    <text x="308" y="119" class="sans card-title">2. 读时拼装回合</text>
+    <text x="308" y="138" class="mono card-code">turns.py · pricing.py</text>
+    <text x="308" y="159" class="sans card-sub">配对调用与结果 · 合并相位</text>
+    <text x="308" y="177" class="sans card-sub">实报费用优先 · 缺费率标 —</text>
+    <text x="308" y="195" class="sans card-sub">拆分环境 / 用户 / Agent 阻塞</text>
+    <rect x="308" y="209" width="178" height="22" rx="5" fill="#eef2f6" stroke="#b9cadb" stroke-width="1" />
+    <text x="397" y="224" text-anchor="middle" class="sans badge-text" fill="#1f4f78">纯函数实时计算 · 不落库</text>
+
+    <!-- Arrow 2 -> 3 -->
+    <text x="531" y="157" text-anchor="middle" class="sans edge-label">先信再评</text>
+    <line x1="510" y1="167" x2="552" y2="167" stroke="#4e7a70" stroke-width="2" marker-end="url(#arrow-sage)" />
+
+    <!-- Box 3: Two-Layer Checks & Coverage -->
+    <rect x="558" y="84" width="466" height="166" rx="10" fill="#eef4f2" stroke="#1a1a1a" stroke-width="1.6" />
+    <rect x="574" y="73" width="238" height="22" rx="5" fill="#4e7a70" stroke="#1a1a1a" stroke-width="1.5" />
+    <text x="693" y="88" text-anchor="middle" class="sans tier-label">3. 两层检查与覆盖率 · checks.py</text>
+
+    <!-- Subcard 3A: Trace Trustworthiness -->
+    <rect x="576" y="106" width="244" height="96" rx="8" fill="#1a1a1a" />
+    <rect x="572" y="102" width="244" height="96" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 573 109 Q 573 103 579 103 L 809 103 Q 815 103 815 109 Z" fill="#4e7a70" />
+    <text x="586" y="125" class="sans card-title">Trace 可信度（先查记录）</text>
+    <text x="586" y="144" class="mono card-code">turn_closed · usage_reported</text>
+    <text x="586" y="160" class="mono card-code">a2a_wait_closed · blocked_explained</text>
+    <text x="586" y="182" class="sans card-sub">失败说明宿主记录有缺口</text>
+
+    <!-- Subcard 3B: Agent Behavior -->
+    <rect x="832" y="106" width="182" height="96" rx="8" fill="#1a1a1a" />
+    <rect x="828" y="102" width="182" height="96" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 829 109 Q 829 103 835 103 L 1003 103 Q 1009 103 1009 109 Z" fill="#7ba79d" />
+    <text x="842" y="125" class="sans card-title">Agent 行为（可信再评）</text>
+    <text x="842" y="144" class="mono card-code">claims_match_events</text>
+    <text x="842" y="160" class="mono card-code">tool_errors_handled</text>
+    <text x="842" y="182" class="sans card-sub">只判明确矛盾 · 缺证标 n/a</text>
+
+    <!-- Bottom rule strip -->
+    <rect x="572" y="210" width="438" height="26" rx="6" fill="#ffffff" stroke="#4e7a70" stroke-width="1.2" />
+    <text x="791" y="227" text-anchor="middle" class="sans badge-text" fill="#2c5249">turn_closed 失败时门控行为检查为 n/a · 原生可见 / 成本已知 / 工具输出覆盖率并列</text>
+  </g>
+
+  <!-- Connector Pipeline -> UI -->
+  <line x1="397" y1="244" x2="397" y2="272" stroke="#6b665e" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arrow-dashed)" />
+
+  <!-- ==================== LOWER TIER: 3-LEVEL UI DRILL-DOWN ==================== -->
+  <g id="drilldown">
+    <rect x="36" y="278" width="988" height="128" rx="10" fill="#f5f1e8" stroke="#1a1a1a" stroke-width="1.6" />
+    <rect x="52" y="267" width="214" height="22" rx="5" fill="#2c2925" stroke="#1a1a1a" stroke-width="1.5" />
+    <text x="159" y="282" text-anchor="middle" class="sans tier-label">设置 → 观测 · 跨全部会话</text>
+
+    <rect x="782" y="267" width="226" height="22" rx="5" fill="#fdfbf7" stroke="#6b665e" stroke-width="1.4" />
+    <text x="895" y="282" text-anchor="middle" class="sans tier-label-ink">本机时区窗口：全部 · 今天 · 7天 · 30天</text>
+
+    <!-- View 1: Overview -->
+    <rect x="58" y="305" width="280" height="86" rx="8" fill="#1a1a1a" />
+    <rect x="54" y="301" width="280" height="86" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 55 308 Q 55 302 61 302 L 327 302 Q 333 302 333 308 Z" fill="#7a4c18" />
+    <text x="70" y="326" class="sans card-title">① 全局总览</text>
+    <text x="70" y="346" class="sans card-sub">总量 · Trace 覆盖率 · 近 14 天趋势</text>
+    <text x="70" y="364" class="sans card-sub">两层检查卡片 · Agent/Provider 表</text>
+    <text x="70" y="380" class="sans card-sub">最近失败与最近回合快捷入口</text>
+
+    <!-- Arrow V1 -> V2 -->
+    <text x="361" y="335" text-anchor="middle" class="sans edge-label">全部回合</text>
+    <line x1="338" y1="345" x2="380" y2="345" stroke="#6b665e" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arrow-dashed)" />
+
+    <!-- View 2: Turns Table -->
+    <rect x="392" y="305" width="280" height="86" rx="8" fill="#1a1a1a" />
+    <rect x="388" y="301" width="280" height="86" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 389 308 Q 389 302 395 302 L 661 302 Q 667 302 667 308 Z" fill="#4e7a70" />
+    <text x="404" y="326" class="sans card-title">② 回合明细</text>
+    <text x="404" y="346" class="sans card-sub">6 项检查统计 + 判别力/覆盖健康提示</text>
+    <text x="404" y="364" class="sans card-sub">按 Agent / 模型 / 状态 / 耗时 / 花费查看</text>
+    <text x="404" y="380" class="sans card-sub">花费构成：实报 vs 估算 vs 无价回合</text>
+
+    <!-- Arrow V2 -> V3 -->
+    <text x="695" y="335" text-anchor="middle" class="sans edge-label">点开回合</text>
+    <line x1="672" y1="345" x2="714" y2="345" stroke="#6b665e" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#arrow-dashed)" />
+
+    <!-- View 3: Turn Detail -->
+    <rect x="726" y="305" width="280" height="86" rx="8" fill="#1a1a1a" />
+    <rect x="722" y="301" width="280" height="86" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="2" />
+    <path d="M 723 308 Q 723 302 729 302 L 995 302 Q 1001 302 1001 308 Z" fill="#1f4f78" />
+    <text x="738" y="326" class="sans card-title">③ 单回合细节</text>
+    <text x="738" y="346" class="sans card-sub">Mission ID 一键复制 · 失败分类与归属</text>
+    <text x="738" y="364" class="sans card-sub">逐步入参、脱敏输出、报错与耗时</text>
+    <text x="738" y="380" class="sans card-sub">完整检查标签说明与 Agent 回复正文</text>
+  </g>
+
+  <!-- Footer -->
+  <g transform="translate(36, 418)">
+    <text x="0" y="14" class="sans" font-size="11" font-weight="600" fill="#6b665e">改一条检查规则或费率，历史回合立刻重算 · 原生工具非全覆盖，边界在面板如实标出</text>
+    <text x="988" y="14" text-anchor="end" class="mono" font-size="10.5" font-weight="600" fill="#8b857b">github.com/Buaixihongshi/Unity</text>
+  </g>
+</svg>

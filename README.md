@@ -100,6 +100,33 @@ Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没�
 
 </details>
 
+## 回合观测：每轮干了啥都能对账
+
+在群里让几位 AI 一起干活，最怕两件事：一是只看到最后一句回复，中间调用了什么工具、卡在哪一步一团黑；二是花了多少钱、到底是 AI 自己没干好还是网络/限额挂了分不清。打开 **设置 → 观测**，可以看到跨全部会话的实时运行账本（支持按本机时区切换 **全部 / 今天 / 7 天 / 30 天** 窗口）。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/unity-observability-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/unity-observability-light.svg">
+  <img alt="Unity 回合观测与核对链路" src="docs/images/unity-observability-light.svg" width="100%">
+</picture>
+
+- **按“回合”折算，三级下钻查细节**：单步事件太碎、整条任务又太粗，Unity 把事件按每次发言的**回合（Turn）**折叠。从 **全局总览**（总量、Trace 覆盖率、近 14 天趋势、Agent/Provider 对比与最近失败）可下钻到 **全部回合明细**，再点开 **单回合细节** 查看逐步入参、脱敏输出、报错、完整回复，并支持一键复制 `Mission ID` 排查。
+- **先查“记录可不可信”，再评“伙伴做得对不对”**：检查分为 **Trace 可信度**（回合是否闭合、求助是否闭合、失败有没有可读原因、有产出是否报了用量）和 **Agent 行为**（声明与事件是否矛盾、工具报错是否重试或承认）两层。若连回合终态都缺失，行为层自动门控记为 `n/a`，不拿残缺证据乱给分。
+- **不把“看不到”装成“零花费”或“没出错”**：`n/a` 是一等公民，面板把 **原生工具可见、成本已知、工具输出** 三项覆盖率与检查结果并列展示；费用有实报用实报、没报按粗估费率算，缺费率或用量为 0 时显示 `—`（未知），不写 `$0` 低估开销；检查长期从未失败或几乎全为 `n/a` 时，还会提示“可能没有判别力”或“覆盖不足”。
+- **把环境问题和伙伴失误拆开**：失败和阻塞会按原因归属拆为 **Agent / 环境 / 用户**（网络、鉴权、配置、额度耗尽等算环境，手动停止算用户），Agent 列表中的“阻塞”只计伙伴自身原因，环境与用户原因单列在旁。
+
+<details>
+<summary>想看观测实现机制、6 项检查规则与当前边界，点这里展开</summary>
+
+- **读时纯函数计算（不落库）**：`backend/app/observability/turns.py`、`checks.py`、`pricing.py` 与 `overview.py` 在每次读取时从 `events` 与 `messages` 实时重建回合、费率与评分，修改检查规则或费率后历史回合立刻重算，不留“旧分数”。
+- **两层 6 项检查**：
+  - `trace` 层：`turn_closed`（任务结束时回合有终态，作为行为层门控）、`a2a_wait_closed`（`wait_reply` 求助有唯一终态、真实回复与发起者续答）、`blocked_explained`（阻塞/失败有可读原因或回复承认）、`usage_reported`（有产出的非演示回合记录了非零用量）。
+  - `agent` 层：`claims_match_events`（启发式抽取委派、产物、执行、完成声明及续答确认，仅在明确与事件矛盾时 fail，无事件证据记 `n/a`）、`tool_errors_handled`（非普通 shell 退出的工具失败已在后续恢复或在回复中承认）。
+- **脱敏与接口**：工具参数与输出写入前过 `sanitize_tool_args` / `sanitize_tool_output` 打码，`output` 截断保留前 2000 字符；前端通过 `/api/observability/overview` 与 `/api/observability/turns/{turn_id}`（另有按任务查询的 `/api/observability`）读取同一套计算逻辑。
+- **已知边界**：`claims_match_events` 重视精确率，只覆盖有限几类已完成声明；独立隔离的讨论（roundtable）回合，CLI 原生工具调用不进 `provider.activity`（原生可见率为 `0%`），属当前采集边界而非报错。完整说明见 [回合观测文档](docs/OBSERVABILITY.md)。
+
+</details>
+
 ## 进度
 
 做完一项打一个勾，🚧 表示正在做。
