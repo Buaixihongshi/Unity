@@ -120,7 +120,7 @@ Unity 现在还做不到的：没接 Slack、飞书这类聊天平台，也没�
 
 - **读时纯函数计算（不落库）**：`backend/app/observability/turns.py`、`checks.py`、`pricing.py` 与 `overview.py` 在每次读取时从 `events` 与 `messages` 实时重建回合、费率与评分，修改检查规则或费率后历史回合立刻重算，不留“旧分数”。
 - **两层 6 项检查**：
-  - `trace` 层：`turn_closed`（任务结束时回合有终态，作为行为层门控）、`a2a_wait_closed`（`wait_reply` 求助有唯一终态、真实回复与发起者续答）、`blocked_explained`（阻塞/失败有可读原因或回复承认）、`usage_reported`（有产出的非演示回合记录了非零用量）。
+  - `trace` 层：`turn_closed`（任务结束了这轮也得有收尾，没收尾就不评后面的行为）、`a2a_wait_closed`（找伙伴等回复时有明确结果、真收到了回复，还接着往下走了）、`blocked_explained`（卡住或出错时写清了原因，或在回复里交代过）、`usage_reported`（真有产出的正式回合记下了 token 用量，没漏记也没全写 0）。
   - `agent` 层：`claims_match_events`（启发式抽取委派、产物、执行、完成声明及续答确认，仅在明确与事件矛盾时 fail，无事件证据记 `n/a`）、`tool_errors_handled`（非普通 shell 退出的工具失败已在后续恢复或在回复中承认）。
 - **脱敏与接口**：工具参数与输出写入前过 `sanitize_tool_args` / `sanitize_tool_output` 打码，`output` 截断保留前 2000 字符；前端通过 `/api/observability/overview` 与 `/api/observability/turns/{turn_id}`（另有按任务查询的 `/api/observability`）读取同一套计算逻辑。
 - **已知边界**：`claims_match_events` 重视精确率，只覆盖有限几类已完成声明；独立隔离的讨论（roundtable）回合，CLI 原生工具调用不进 `provider.activity`（原生可见率为 `0%`），属当前采集边界而非报错。完整说明见 [回合观测文档](docs/OBSERVABILITY.md)。
