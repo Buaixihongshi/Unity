@@ -87,10 +87,14 @@ class Roundtable:
                 return event
         return None
 
-    def interrupt(self, mission_id, content, target, request_id):
+    def interrupt(self, mission_id, content, target, request_id, attachment_ids=None):
         if not request_id:
             raise DiscussionError('Roundtable interruptions require request_id', 422)
         fingerprint = {'content': content, 'target_agent_id': target}
+        if attachment_ids:
+            fingerprint["attachment_ids"] = attachment_ids
+        if not content.strip() and not attachment_ids:
+            raise DiscussionError("请输入文字或添加图片", 422)
         with self.transaction(mission_id) as (mission, state, events):
             if self.replay(events, 'interrupt', request_id, fingerprint):
                 return
@@ -99,7 +103,7 @@ class Roundtable:
                 raise DiscussionError('Discussion is closing or stopping; save this input for the next discussion')
             if target is not None and target not in mission.discussion.participant_ids:
                 raise DiscussionError('Target must be a discussion participant', 422)
-            message = self.repo.add_interruption(mission_id, content, target, request_id=request_id, request=fingerprint)
+            message = self.repo.add_interruption(mission_id, content, target, request_id=request_id, request=fingerprint, attachment_ids=attachment_ids)
             event = self.repo.list_events_after(mission_id, 0)[-1]
             item = {'event_id': event.id, 'message_id': message.id, **fingerprint}
             state['pending_interrupts'].append(item)

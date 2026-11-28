@@ -155,6 +155,7 @@ export function buildTurnViews(
       missionId: event.mission_id,
       artifact: event.artifact,
       content: event.content,
+      attachments: event.attachments,
       capability,
       providerLabel,
       personaLabel,

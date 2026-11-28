@@ -6,7 +6,7 @@ def install():
     from backend.app.extensions.discussion import hooks, tools
     for name in ('mission_takeover', 'mission_owned', 'mission_failed', 'mission_interrupt', 'mission_prepare',
                  'occupies_conversation', 'attempt_started', 'turn_stopped', 'demo_turn',
-                 'api_structured_turn', 'discussion_view', 'annotate_messages', 'conversation_preview',
+                 'api_structured_turn', 'attachment_message_ids', 'discussion_view', 'annotate_messages', 'conversation_preview',
                  'mission_detail', 'health_fields', 'turn_records_refusal'):
         ep.register(name, getattr(hooks, name))
     ep.register('tool_guard', tools.roundtable_guard)

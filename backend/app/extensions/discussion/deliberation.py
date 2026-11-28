@@ -766,10 +766,14 @@ class Deliberation:
                 lease.update(status='cancelled', token=None)
         self.save(mission, state, status=MissionStatus.COMPLETED, completed_at=utc_now())
 
-    def interrupt(self, mission_id, content, target, request_id):
+    def interrupt(self, mission_id, content, target, request_id, attachment_ids=None):
         if not request_id:
             raise DiscussionError("Roundtable interruptions require request_id", 422)
         fingerprint = {"content": content, "target_agent_id": target}
+        if attachment_ids:
+            fingerprint["attachment_ids"] = attachment_ids
+        if not content.strip() and not attachment_ids:
+            raise DiscussionError("请输入文字或添加图片", 422)
         with self.transaction(mission_id) as (mission, state):
             for event in self.repo.list_events_after(mission_id, 0):
                 if event.event_type == "interrupt" and event.payload.get("request_id") == request_id:
@@ -780,7 +784,7 @@ class Deliberation:
                 raise DiscussionError("Discussion has ended; continue in a new mission")
             if target and target not in mission.discussion.participant_ids:
                 raise DiscussionError("Target must be a discussion participant", 422)
-            msg = self.repo.add_interruption(mission_id, content, target, request_id=request_id, request=fingerprint)
+            msg = self.repo.add_interruption(mission_id, content, target, request_id=request_id, request=fingerprint, attachment_ids=attachment_ids)
             state["pending_inputs"].append(msg.id)
             if mission.status == MissionStatus.AWAITING_INPUT:
                 self._await(mission, state, "revise_input")

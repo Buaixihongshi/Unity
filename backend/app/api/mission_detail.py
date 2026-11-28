@@ -80,6 +80,7 @@ def _message_event(message: Message, sort_key: Optional[tuple[int, int]] = None)
         "event_type": "message",
         "role": message.role.value,
         "content": message.content,
+        "attachment_ids": message.attachments,
         "provider_id": message.provider_id,
         "agent_id": message.agent_id,
         "turn_id": message.turn_id,
@@ -691,6 +692,9 @@ def build_mission_detail(repo: Repository, settings: Settings, mission_id: str) 
     events = [_strip_sort_key(event) for event in serialized_events]
     message_events = [_message_event(entry.message) for entry in entries]
     audit_cache = {}
+    from backend.app.attachments.delivery import annotate
+    annotate(message_events, repo, db_events)
+    annotate(events, repo, db_events)
     extension_points.each('annotate_messages', message_events, [mission], db_events, repo, audit_cache)
     extension_points.each('annotate_messages', events, [mission], db_events, repo, audit_cache)
 

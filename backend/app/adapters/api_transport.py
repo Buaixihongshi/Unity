@@ -172,7 +172,7 @@ def request(connection, key, method, path, payload=None, cancelled=lambda: False
         watcher.join(timeout=.2)
 
 
-def stream_text(connection, key, model, prompt, on_text, cancelled=lambda: False):
+def stream_text(connection, key, model, prompt, on_text, cancelled=lambda: False, *, images=()):
     protocol = connection['protocol']
     payload = {'model': model, 'stream': True}
     if protocol == 'openai_responses':
@@ -183,6 +183,20 @@ def stream_text(connection, key, model, prompt, on_text, cancelled=lambda: False
         payload['messages'] = [{'role': 'user', 'content': prompt}]
         if protocol == 'anthropic':
             payload['max_tokens'] = 8192
+    if images:
+        from backend.app.attachments.delivery import encoded
+        if protocol == 'anthropic':
+            content = [{'type': 'image', 'source': {'type': 'base64', 'media_type': item['mime'], 'data': encoded(item)}} for item in images]
+            content.append({'type': 'text', 'text': prompt})
+        else:
+            content = [{'type': 'input_text' if protocol == 'openai_responses' else 'text', 'text': prompt}]
+            for item in images:
+                url = 'data:' + item['mime'] + ';base64,' + encoded(item)
+                content.append({'type': 'input_image', 'image_url': url} if protocol == 'openai_responses' else {'type': 'image_url', 'image_url': {'url': url}})
+        if protocol == 'openai_responses':
+            payload['input'] = [{'role': 'user', 'content': content}]
+        else:
+            payload['messages'][0]['content'] = content
     with request(connection, key, 'POST', path, payload, cancelled) as response:
         data = []
         size = 0

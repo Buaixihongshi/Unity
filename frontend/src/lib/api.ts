@@ -6,12 +6,13 @@ async function parseJson<T>(response: Response, fallbackMessage: string): Promis
   if (!response.ok) {
     let detail: string | null = null;
     try {
-      const body = await response.json() as { detail?: unknown };
+      const body = await response.json() as { detail?: unknown; message?: unknown };
+      if (typeof body.message === "string") detail = body.message;
       if (typeof body.detail === "string" && body.detail.trim()) {
         detail = body.detail;
       }
     } catch {}
-    throw new Error(detail || fallbackMessage);
+    throw Object.assign(new Error(detail || fallbackMessage), { status: response.status });
   }
   return response.json() as Promise<T>;
 }
@@ -43,6 +44,7 @@ export async function fetchObservabilityOverview(
 
 export interface MissionCreatePayload {
   goal: string;
+  attachment_ids?: string[];
   skill?: "discuss";
   title?: string;
   target_agent_ids?: string[];
@@ -67,6 +69,7 @@ export function newRequestId(scope: string): string {
 /** Task mode keeps the original body shape so older API consumers stay valid. */
 function missionCreateBody(payload: MissionCreatePayload): string {
   const body: Record<string, unknown> = { goal: payload.goal };
+  if (payload.attachment_ids !== undefined) body.attachment_ids = payload.attachment_ids;
   if (payload.title) body.title = payload.title;
   if (payload.skill) body.skill = payload.skill;
   if (payload.work_mode) body.work_mode = payload.work_mode;
@@ -92,15 +95,15 @@ export async function createMission(payload: MissionCreatePayload): Promise<Miss
 export async function interruptMission(
   missionId: string,
   content: string,
-  options?: { targetAgentId?: string; requestId?: string },
+  options?: { targetAgentId?: string; requestId?: string; attachmentIds?: string[] },
 ): Promise<MissionDetail> {
   const response = await fetch(`${API_ROOT}/api/missions/${missionId}/interruptions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(
       options?.requestId
-        ? { content, target_agent_id: options?.targetAgentId, request_id: options.requestId }
-        : { content, target_agent_id: options?.targetAgentId },
+        ? { content, target_agent_id: options?.targetAgentId, request_id: options.requestId, ...(options.attachmentIds ? { attachment_ids: options.attachmentIds } : {}) }
+        : { content, target_agent_id: options?.targetAgentId, ...(options?.attachmentIds ? { attachment_ids: options.attachmentIds } : {}) },
     ),
   });
   return parseJson<MissionDetail>(response, "发送插话失败");
@@ -428,4 +431,13 @@ export async function fetchArtifactIndex(query: string, cursor?: string): Promis
   const params = new URLSearchParams({q:query,limit:'50'});
   if(cursor)params.set('cursor',cursor);
   return parseJson<ArtifactIndexPage>(await fetch(`/api/artifacts?${params}`), '加载全部仓库失败');
+}
+
+export async function fetchAttachmentLimits(): Promise<import('../types').AttachmentLimits> {
+  return parseJson(await fetch('/api/config/attachments'), '加载图片配置失败');
+}
+export async function uploadAttachment(conversationId: string, file: File, signal?: AbortSignal): Promise<import('../types').Attachment> {
+  return parseJson(await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/attachments`, {
+    method: 'POST', headers: { 'Content-Type': file.type, 'X-Attachment-Name': encodeURIComponent(file.name) }, body: file, signal,
+  }), '图片上传失败，请重试');
 }

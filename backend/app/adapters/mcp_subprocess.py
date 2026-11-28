@@ -234,6 +234,9 @@ class MCPSubprocessAdapter(CLIAdapter):
                     launch_env.pop(key, None)
 
             cli_basename = os.path.basename(self.command)
+            from backend.app.attachments.delivery import prepare, cli_input
+            mode = "native" if cli_basename in {"claude", "codex"} else "path" if cli_basename == "agy" else "none"
+            mcp_prompt, images = prepare(tools, mission_id, agent_id, turn_id, provider_id, mcp_prompt, mode, tmp)
             mission = repository.get_mission(mission_id)
             is_verification = bool(
                 mission and is_provider_verification_mission(mission)
@@ -298,6 +301,8 @@ class MCPSubprocessAdapter(CLIAdapter):
                 launch_env["CODEX_HOME"] = str(tmp)
                 cmd = [self.command, *self.args, mcp_prompt]
 
+            cmd, image_stdin = cli_input(cmd, cli_basename, images, tmp, mcp_prompt)
+            input_stream = guard_stack.enter_context(image_stdin.open()) if image_stdin else subprocess.DEVNULL
             if self.on_config_written is not None:
                 self.on_config_written(config_path)
 
@@ -311,7 +316,7 @@ class MCPSubprocessAdapter(CLIAdapter):
             try:
                 proc = subprocess.Popen(
                     cmd,
-                    stdin=subprocess.DEVNULL,
+                    stdin=input_stream,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -841,6 +846,8 @@ def _write_debug_files(
     debug_dir = os.environ.get("YIREN_MCP_DEBUG_DIR")
     if not debug_dir:
         return
+    from backend.app.adapters.cli_diagnostics import _redact
+    stdout, stderr = _redact(stdout), _redact(stderr)
     debug_path = Path(debug_dir)
     debug_path.mkdir(parents=True, exist_ok=True)
     provider_stem = "{tid}.{provider}".format(tid=turn_id, provider=provider_id)

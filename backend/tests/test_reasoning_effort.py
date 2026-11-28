@@ -53,7 +53,7 @@ def test_override_merges_efforts_beside_models():
     assert wangye.provider_models == next(a for a in base if a.id == 'wangye').provider_models
 
 
-def test_all_cli_routes_receive_role_effort(temp_settings, monkeypatch):
+def test_all_cli_routes_receive_role_effort(temp_settings, repository, monkeypatch):
     from backend.app.extensions.discussion import deliberation_cli
     from backend.app.extensions.discussion.hooks import run_deliberation_turn
     router = provider_router.ProviderRouterAdapter(temp_settings.config_dir, agent_overrides={
@@ -61,7 +61,7 @@ def test_all_cli_routes_receive_role_effort(temp_settings, monkeypatch):
     monkeypatch.setattr(provider_router, 'get_cli_provider', lambda *a, **kw: _provider('codex', ['exec']))
     subprocess = Mock()
     monkeypatch.setattr(provider_router, 'SubprocessCLIAdapter', subprocess)
-    router.run_turn('mission', 'wangye', 'turn', 'codex', 'prompt', Mock())
+    router.run_turn('mission', 'wangye', 'turn', 'codex', 'prompt', Mock(repository=repository))
     assert subprocess.call_args.args[1] == ['exec', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"']
     isolated = Mock()
     monkeypatch.setattr(deliberation_cli, 'DeliberationCLIAdapter', isolated)

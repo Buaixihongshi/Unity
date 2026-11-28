@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 class InterruptRequest(BaseModel):
     request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    content: str = Field(min_length=1)
+    content: str = ""
+    attachment_ids: list[str] = Field(default_factory=list)
     target_agent_id: Optional[str] = None
 
 
@@ -149,7 +150,9 @@ def build_router(
             # A finished run never reads its queue again; the message would sit unanswered.
             if mission.status not in {MissionStatus.PENDING, MissionStatus.RUNNING}:
                 raise HTTPException(status_code=409, detail="本轮已结束，请直接发送新消息")
-            repo.add_interruption(mission_id, payload.content, payload.target_agent_id)
+            if not payload.content.strip() and not payload.attachment_ids:
+                raise HTTPException(status_code=422, detail="请输入文字或添加图片")
+            repo.add_interruption(mission_id, payload.content, payload.target_agent_id, attachment_ids=payload.attachment_ids)
         return build_mission_detail(repo, settings, mission_id)
 
     @router.post("/{mission_id}/pause", status_code=202)

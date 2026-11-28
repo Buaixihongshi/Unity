@@ -19,6 +19,8 @@ class FakeCLIAdapter(CLIAdapter):
         prompt: str,
         tools: MCPTools,
     ) -> TurnOutcome:
+        from backend.app.attachments.delivery import prepare
+        prompt, _ = prepare(tools, mission_id, agent_id, turn_id, provider_id, prompt, 'native')
         taken_over = extension_points.first('demo_turn', self, mission_id, agent_id, turn_id, provider_id, tools)
         if taken_over is not None:
             return taken_over

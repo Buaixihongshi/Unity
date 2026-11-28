@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
@@ -606,6 +606,68 @@ describe("Unity app", () => {
       ? { goal: "改成先做调研", revises_message_id: "msg_u1" }
       : { goal: draft || "继续" });
     await waitFor(() => expect(screen.queryByRole("button", { name: "取消修改" })).not.toBeInTheDocument());
+  });
+
+  it("取消修订恢复上传草稿后，旧上传延迟取消仍会等待新上传并只发送一次", async () => {
+    const at = "2026-05-05T00:00:00Z";
+    const userMessage = { id: "msg_u1", mission_id: "m1", event_type: "message", role: "user" as const, content: "先做规划", created_at: at };
+    const detail = makeConvDetail({ messages: [userMessage], latest_mission_detail: {
+      mission: { id: "m1", goal: "先做规划", status: "blocked", created_at: at, updated_at: at },
+      events: [], artifacts: [], messages: [userMessage],
+    } });
+    let rejectOld!: (reason: unknown) => void, resolveFresh!: (response: Response) => void;
+    const oldUpload = new Promise<Response>((_resolve, reject) => { rejectOld = reject; });
+    const freshUpload = new Promise<Response>(resolve => { resolveFresh = resolve; });
+    const posts: RequestInit[] = [], uploads: RequestInit[] = [];
+    const base = stubFetch((url, init) => {
+      if (url === "/api/config/attachments") return new Response(JSON.stringify({
+        limit_bytes: 3_932_160, max_message_images: 4, max_mission_images: 8,
+        max_mission_encoded_bytes: 16_777_216, mime_types: ["image/png"],
+      }), { status: 200 });
+      if (url === "/api/conversations/c_1/missions" && init?.method === "POST") {
+        posts.push(init);
+        return new Response(JSON.stringify(detail), { status: 200 });
+      }
+      return null;
+    });
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:preview"), revokeObjectURL: vi.fn() }));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/conversations/c_1/attachments" && init?.method === "POST") {
+        uploads.push(init);
+        return uploads.length === 1 ? oldUpload : freshUpload;
+      }
+      return base(input, init);
+    }));
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText("消息输入"), "先做规划");
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("button", { name: "编辑上一条消息" });
+    await userEvent.type(screen.getByLabelText("消息输入"), "看看这张图");
+    await waitFor(() => expect(screen.getByText("＋ 图片")).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("选择图片文件"), { target: {
+      files: [new File(["image"], "a.png", { type: "image/png" })],
+    } });
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    await userEvent.click(screen.getByRole("button", { name: "编辑上一条消息" }));
+    expect(uploads[0].signal?.aborted).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "取消修改" }));
+    await waitFor(() => expect(uploads).toHaveLength(2));
+    expect(screen.getByLabelText("消息输入")).toHaveValue("看看这张图");
+    await act(async () => rejectOld(new DOMException("延迟取消", "AbortError")));
+
+    await userEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(screen.getByRole("button", { name: "图片上传中…" })).toBeDisabled();
+    expect(posts).toHaveLength(1);
+    await act(async () => resolveFresh(new Response(JSON.stringify({
+      id: "att_fresh", mime: "image/png", size: 42, width: 100, height: 50,
+      display_name: "a.png", url: "/api/attachments/att_fresh/content?conversation_id=c_1",
+    }), { status: 200 })));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(JSON.parse(String(posts[1].body))).toEqual({ goal: "看看这张图", attachment_ids: ["att_fresh"] });
+    await waitFor(() => expect(screen.getByLabelText("消息输入")).toHaveValue(""));
+    expect(screen.queryByRole("button", { name: "移除图片 a.png" })).not.toBeInTheDocument();
+    expect(posts).toHaveLength(2);
   });
 
   it("clicking new conversation creates and selects an empty conversation", async () => {

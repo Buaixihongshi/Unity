@@ -1,3 +1,4 @@
+import { MessageImages } from "./ImageAttachments";
 import { PersonaPortrait } from "./PersonaPortrait";
 import { Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -78,6 +79,7 @@ export function ChatBubble({ turn, onEdit }: { turn: TurnView; onEdit?: () => vo
             老板{turn.metadata.revised ? <span className="bubble-revised">已修改</span> : null}
           </div>
           <MessageMarkdown content={turn.content} />
+          <MessageImages images={turn.attachments ?? []} />
         </article>
         {/* Sits beside the bubble so editing never adds height to the message itself. */}
         {onEdit && <button type="button" className="bubble-edit" onClick={onEdit} aria-label="编辑上一条消息" title="编辑消息"><Pencil size={14} aria-hidden="true" /></button>}
@@ -112,6 +114,7 @@ export function ChatBubble({ turn, onEdit }: { turn: TurnView; onEdit?: () => vo
           <span className="bubble-persona" style={{ color: color.name }}>
             {identity}
           </span>
+          {turn.metadata.image_degraded && <span className="image-degraded" title={turn.metadata.image_degraded}>未看到图片</span>}
         </div>
         {!discussionResult && <ThoughtBlock thoughts={turn.thoughts} toolCalls={turn.toolCalls} />}
         {displayContent && <MessageMarkdown content={displayContent} streaming={!turn.content} />}

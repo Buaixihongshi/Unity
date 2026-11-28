@@ -191,6 +191,8 @@ class ProviderRouterAdapter(CLIAdapter):
                     self._gemini_sessions.pop(agent_id, None)
             return outcome
 
+        from backend.app.attachments.delivery import prepare
+        prompt, _ = prepare(tools, mission_id, agent_id, turn_id, provider_id, prompt, "none")
         adapter = SubprocessCLIAdapter(
             provider.command,
             provider.args,

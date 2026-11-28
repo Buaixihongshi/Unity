@@ -34,12 +34,23 @@ def mission_failed(repo, mission):
 
 def mission_interrupt(repo, mission, payload):
     if is_v2(mission):
-        Deliberation(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id)
+        Deliberation(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id, payload.attachment_ids)
         return True
     if mission.room_mode == 'roundtable':
-        Roundtable(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id)
+        Roundtable(repo).interrupt(mission.id, payload.content, payload.target_agent_id, payload.request_id, payload.attachment_ids)
         return True
     return False
+
+
+
+def attachment_message_ids(repo, mission, agent_id, turn_id, provider_id, token):
+    if not mission or not is_v2(mission) or not token:
+        return None
+    policy = Deliberation(repo)
+    with policy.transaction(mission.id) as (_, state):
+        policy._lease(state, agent_id, turn_id, provider_id, token)
+        frozen = policy.get(mission.id, state['snapshot_id'])
+        return {message['id'] for message in frozen['messages'] if message['mission_id'] == mission.id}
 
 
 def mission_prepare(repo, settings, payload, registry, valid_ids):

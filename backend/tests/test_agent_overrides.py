@@ -160,7 +160,7 @@ def test_model_argument_overrides_shared_config_without_mutation():
         assert with_model(provider, '') is provider
 
 
-def test_both_cli_routes_receive_role_model(temp_settings, monkeypatch):
+def test_both_cli_routes_receive_role_model(temp_settings, repository, monkeypatch):
     from unittest.mock import Mock
     from backend.app.adapters import provider_router
     from backend.app.extensions.discussion import deliberation_cli
@@ -171,7 +171,7 @@ def test_both_cli_routes_receive_role_model(temp_settings, monkeypatch):
         id='codex', label='Codex', command='codex', args=['exec'], enabled=True))
     subprocess = Mock()
     monkeypatch.setattr(provider_router, 'SubprocessCLIAdapter', subprocess)
-    router.run_turn('mission', 'wangye', 'turn', 'codex', 'prompt', Mock())
+    router.run_turn('mission', 'wangye', 'turn', 'codex', 'prompt', Mock(repository=repository))
     assert subprocess.call_args.args[1] == ['exec', '--model', 'gpt-6.1-sol']
     isolated = Mock()
     monkeypatch.setattr(deliberation_cli, 'DeliberationCLIAdapter', isolated)

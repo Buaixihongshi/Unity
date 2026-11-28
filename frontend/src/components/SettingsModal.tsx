@@ -206,6 +206,7 @@ export function SettingsModal({
         enabled,
         timeout: patch?.timeout ?? base.timeout,
         allow_private: patch?.allow_private ?? base.allow_private,
+        image_input: patch?.image_input ?? base.image_input ?? "native",
         patch,
       });
     }
@@ -222,6 +223,7 @@ export function SettingsModal({
           has_key: Boolean(patch.api_key),
           timeout: patch.timeout ?? 60,
           allow_private: patch.allow_private ?? false,
+          image_input: patch.image_input ?? "native",
           isNew: true,
           patch,
         });
@@ -1594,6 +1596,13 @@ export function SettingsModal({
                                         </select>
                                       </div>
 
+                                      <div className="form-group">
+                                        <label className="form-label">图片输入</label>
+                                        <select className="custom-select" aria-label="图片输入" value={c.image_input ?? 'native'}
+                                          onChange={e => updateConnectionDraft(c.id, { image_input: e.target.value as 'native' | 'none' })}>
+                                          <option value="native">支持图片</option><option value="none">仅接收文字（回复会标注未看到图片）</option>
+                                        </select>
+                                      </div>
                                       <div className="form-group">
                                         <label className="form-label">
                                           <span>Base URL</span>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MissionRoomPage } from "./components/MissionRoomPage";
 import { TasksWorkspace } from "./components/TasksWorkspace";
+import { useImageAttachments, type ImageDraft } from "./hooks/useImageAttachments";
 import { useMissionStream } from "./hooks/useMissionStream";
 import { useProviderStatus } from "./hooks/useProviderStatus";
 import {
@@ -63,7 +64,7 @@ export default function App() {
   const [confirmations, setConfirmations] = useState<ConfirmedMention[]>([]);
   /** The last user message explicitly selected for editing, if any. */
   const [revisingMessageId, setRevisingMessageId] = useState<string | null>(null);
-  const draftBeforeRevision = useRef<{ input: string; confirmations: ConfirmedMention[] } | null>(null);
+  const draftBeforeRevision = useRef<{ input: string; confirmations: ConfirmedMention[]; images: ImageDraft[] } | null>(null);
   /** The mission on screen, so a slow stop can tell the user has moved elsewhere. */
   const shownMissionId = useRef<string | undefined>(undefined);
   const [stopping, setStopping] = useState(false);
@@ -78,6 +79,18 @@ export default function App() {
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
   const providerStatus = useProviderStatus();
+  const attachmentConversation = useRef<Promise<string> | null>(null);
+  const images = useImageAttachments(async () => {
+    if (selectedConvId) return selectedConvId;
+    const request = conversationRequest.current;
+    if (!attachmentConversation.current) attachmentConversation.current = createConversation().then(conv => {
+      if (request !== conversationRequest.current) throw new Error('会话已切换，请在当前会话重新添加图片');
+      setSelectedConvId(conv.id);
+      setConvDetail({ conversation: conv, missions: [], messages: [], latest_mission_detail: null });
+      return conv.id;
+    }).finally(() => { attachmentConversation.current = null; });
+    return attachmentConversation.current;
+  });
 
   useEffect(() => {
     const sync = () => {
@@ -291,6 +304,7 @@ export default function App() {
   );
 
   async function handleSelectConversation(convId: string) {
+    images.clear();
     const request = ++conversationRequest.current;
     setRevisingMessageId(null);
     setSelectedConvId(convId);
@@ -368,6 +382,7 @@ export default function App() {
   }
 
   async function handleNewConversation() {
+    images.clear();
     const request = ++conversationRequest.current;
     setRevisingMessageId(null);
     try {
@@ -428,7 +443,7 @@ export default function App() {
     }
   }
 
-  async function submit() {
+  async function submit(attachmentIds?: string[]) {
     const rawInput = input.trim();
     // 组合收紧：讨论技能不支持指定单个成员，明确拦截而不是退化成普通 goal。
     if (detectUnsupportedTargetedSkill(rawInput)) {
@@ -436,7 +451,7 @@ export default function App() {
       return;
     }
     const skillCommand = parseDiscussCommand(rawInput);
-    if (skillCommand && !skillCommand.goal) {
+    if (skillCommand && !skillCommand.goal && !attachmentIds?.length) {
       setError("请在 /discuss 后输入要讨论的问题。");
       return;
     }
@@ -452,7 +467,7 @@ export default function App() {
     const bodyless = skillCommand
       ? skillCommand.goal
       : stripTypedMentions(stripConfirmedMentions(input, confirmations));
-    if (!bodyless.trim()) {
+    if (!bodyless.trim() && !attachmentIds?.length) {
       setError("仅 @成员 不能作为任务内容，请补充具体任务。");
       return;
     }
@@ -483,6 +498,7 @@ export default function App() {
             ...(revising ? { revises_message_id: revising } : {}),
           };
 
+    if (attachmentIds?.length || (revising && editableMessage?.attachments?.length)) payload.attachment_ids = attachmentIds ?? [];
     setBusy(true);
     setError(null);
     try {
@@ -494,6 +510,7 @@ export default function App() {
                 : parseMentionTarget(rawInput).targetAgentId)
             : missionTargetAgentIds[0],
           requestId: roundtableActive ? newRequestId("input") : undefined,
+          ...(attachmentIds?.length ? { attachmentIds } : {}),
         });
         setLatestMissionDetail(updated);
       } else if (selectedConvId) {
@@ -515,6 +532,7 @@ export default function App() {
         }
         listConversations().then(setConversations).catch(() => {});
       }
+      images.clear();
       setInput("");
       setConfirmations([]);
       setRevisingMessageId(null);
@@ -693,6 +711,11 @@ export default function App() {
       confirmations={confirmations}
       onConfirmationsChange={setConfirmations}
       onSubmit={submit}
+      images={images}
+      imageBudgetFull={Boolean(hasRunningMission && images.limits && (() => {
+        const attached = (latestMissionDetail?.messages ?? []).flatMap(message => message.attachments ?? []);
+        return attached.length >= images.limits.max_mission_images || attached.reduce((total, item) => total + 4 * Math.ceil(item.size / 3), 0) >= images.limits.max_mission_encoded_bytes;
+      })())}
       conversations={conversations}
       selectedConversationId={selectedConvId}
       onSelectConversation={handleSelectConversation}
@@ -717,9 +740,10 @@ export default function App() {
       }}
       onContinueDiscussion={handleContinueDiscussion}
       onEditMessage={editableMessage ? () => {
-        if (!revisingMessageId) draftBeforeRevision.current = { input, confirmations };
+        if (!revisingMessageId) draftBeforeRevision.current = { input, confirmations, images: images.snapshot() };
         setRevisingMessageId(String(editableMessage.id));
         setInput(editableMessage.content);
+        images.restore(editableMessage.attachments ?? []);
         setConfirmations([]);
         setError(null);
       } : undefined}
@@ -728,6 +752,7 @@ export default function App() {
       stopping={stopping}
       revising={Boolean(revisingMessageId) && !hasRunningMission}
       onCancelRevise={() => {
+        images.restoreDraft(draftBeforeRevision.current?.images ?? []);
         setRevisingMessageId(null);
         setInput(draftBeforeRevision.current?.input ?? "");
         setConfirmations(draftBeforeRevision.current?.confirmations ?? []);

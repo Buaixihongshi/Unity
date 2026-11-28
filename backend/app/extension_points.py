@@ -31,6 +31,7 @@ HOOKS = (
     'attempt_started',       # (repository, mission, turn_id, provider_id, attempt) -> None
     'turn_stopped',          # (repository, mission) -> bool
     'demo_turn',             # (adapter, mission_id, agent_id, turn_id, provider_id, tools) -> TurnOutcome | None
+    'attachment_message_ids', # (repository, mission, agent_id, turn_id, provider_id, token) -> set[str] | None
     'api_structured_turn',   # (mission) -> handler with prompt(...) / submit(...), or None
     'route_turn',            # (router, mission_id, agent_id, turn_id, provider_id, prompt, tools) -> TurnOutcome | None
     # MCP tools: guards around core tools, takeovers, extra tools and context.

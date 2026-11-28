@@ -362,6 +362,7 @@ class AntigravitySessionPool:
         worker = None
         token = None
         initializing = False
+        image_temp = None
         try:
             ledger = ExecutionLedger(repo)
             worker = self.workers.get(key)
@@ -406,6 +407,9 @@ class AntigravitySessionPool:
             # Scope data comes from the host, never from previous model memory.
             instruction += '\n当前任务：' + mission_id + '；当前回合：' + turn_id + '。\n'
             recovery = ledger.recovery_hint(mission.conversation_id, agent_id)
+            image_temp = tempfile.TemporaryDirectory(prefix='images-', dir=worker.tmp.name)
+            from backend.app.attachments.delivery import prepare
+            prompt, _ = prepare(tools, mission_id, agent_id, turn_id, provider_id, prompt, 'path', Path(image_temp.name))
             message = {'event': 'user', 'message': {'content': _augment_prompt_for_mcp(prompt) + recovery + instruction}}
             tools.repository.add_event(mission_id, 'execution.delivery_started', {'turn_id': turn_id, 'worker_id': worker.id})
             worker.proc.stdin.write(json.dumps(message, ensure_ascii=False) + '\n')
@@ -518,6 +522,8 @@ class AntigravitySessionPool:
                                'Antigravity 执行中断，已保留消息与活动记录；请核对工作区后继续，未自动重放操作。' + ' ' + str(exc),
                                failure_code=timeout_code if isinstance(exc, TimeoutError) else None)
         finally:
+            if image_temp is not None:
+                image_temp.cleanup()
             adapter.live_progress.clear(mission_id, turn_id)
             self._release(key)
 

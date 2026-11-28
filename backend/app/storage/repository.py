@@ -70,6 +70,12 @@ class Repository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_discussion_results_mission
                     ON discussion_results(mission_id);
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_attachments_conversation ON attachments(conversation_id);
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
                     mission_id TEXT NOT NULL,
@@ -206,20 +212,23 @@ class Repository:
             rows = db.execute("SELECT data FROM missions ORDER BY id DESC").fetchall()
         return [Mission.model_validate_json(row["data"]) for row in rows]
 
-    def add_message(self, message: Message, db: Optional[sqlite3.Connection] = None) -> None:
+    def add_message(self, message: Message, db: Optional[sqlite3.Connection] = None, *, revises_message_id=None) -> None:
         if db is None:
-            with self._transaction() as connection:
-                self.add_message(message, db=connection)
+            with self._transaction(immediate=True) as connection:
+                self.add_message(message, db=connection, **({"revises_message_id": revises_message_id} if revises_message_id else {}))
             return
+        if message.attachments:
+            from backend.app.attachments.store import AttachmentStore
+            AttachmentStore(self).bind(message, db, revises_message_id=revises_message_id)
         db.execute(
             "INSERT INTO messages (id, mission_id, data) VALUES (?, ?, ?)",
             (message.id, message.mission_id, message.model_dump_json()),
         )
         self.add_event(message.mission_id, "message", message.model_dump(mode="json"), db=db)
 
-    def add_interruption(self, mission_id: str, content: str, target_agent_id: Optional[str] = None, *, request_id: Optional[str] = None, request: Optional[dict] = None) -> Message:
+    def add_interruption(self, mission_id: str, content: str, target_agent_id: Optional[str] = None, *, request_id: Optional[str] = None, request: Optional[dict] = None, attachment_ids=None) -> Message:
         """Commit the visible user message and its routing event together."""
-        with self._transaction() as db:
+        with self._transaction(immediate=True) as db:
             row = db.execute("SELECT data FROM missions WHERE id = ?", (mission_id,)).fetchone()
             if row is None:
                 raise ValueError(f"Unknown mission: {mission_id}")
@@ -227,6 +236,7 @@ class Repository:
             message = Message(
                 id=f"msg_{uuid4().hex}", mission_id=mission_id,
                 conversation_id=mission.conversation_id, role=MessageRole.USER, content=content,
+                attachments=list(attachment_ids or []),
             )
             self.add_message(message, db=db)
             self.add_event(mission_id, "interrupt", {
@@ -422,6 +432,8 @@ class Repository:
                           "work_operations", "context_checkpoints"):
                 db.execute(f"DELETE FROM {table} WHERE conversation_id = ?", (conversation_id,))
             db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+            from backend.app.attachments.store import AttachmentStore
+            AttachmentStore(self).delete_conversation(conversation_id, db)
 
     def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
         with self._transaction() as db:

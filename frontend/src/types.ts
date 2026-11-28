@@ -149,6 +149,7 @@ export interface Mission {
 }
 
 export interface ThreadEventMetadata {
+  image_degraded?: string;
   discussion_visibility?: "internal" | "final";
   discussion_pending_decision?: boolean;
   discussion_revision_reviewed?: boolean;
@@ -187,7 +188,15 @@ export interface HostProgress {
   stopped_at?: string;
 }
 
+export interface Attachment {
+  id: string; mime: string; size: number; width: number; height: number; display_name: string; url: string;
+}
+export interface AttachmentLimits {
+  limit_bytes: number; max_message_images: number; max_mission_images: number; max_mission_encoded_bytes: number; mime_types: string[];
+}
+
 export interface ThreadEvent {
+  attachments?: Attachment[];
   artifact?: Artifact;
   id: number | string;
   mission_id: string;
@@ -431,6 +440,7 @@ export interface MissionDetail {
 }
 
 export interface TurnView {
+  attachments?: Attachment[];
   artifact?: Artifact;
   id: string;
   missionId?: string;
@@ -533,6 +543,7 @@ export type HubConnectionProtocol = "openai_responses" | "openai_chat" | "anthro
 export type HubConnectionKind = "cli" | "api";
 
 export interface HubConnectionView {
+  image_input?: "native" | "none";
   id: string;
   name: string;
   kind: HubConnectionKind;
@@ -545,6 +556,7 @@ export interface HubConnectionView {
 }
 
 export interface HubConnectionPatch {
+  image_input?: "native" | "none";
   name?: string;
   protocol?: HubConnectionProtocol | null;
   base_url?: string | null;

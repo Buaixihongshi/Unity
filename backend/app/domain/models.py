@@ -199,6 +199,7 @@ class Message(BaseModel):
     mission_id: str
     role: MessageRole
     content: str
+    attachments: list[str] = Field(default_factory=list)
     agent_id: Optional[str] = None
     turn_id: Optional[str] = None
     provider_id: Optional[str] = None
